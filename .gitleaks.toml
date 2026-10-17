@@ -1,0 +1,25 @@
+# Gitleaks config for Duckherd. Uses the default rules, plus one narrow allowlist.
+title = "Duckherd"
+
+[extend]
+useDefault = true
+
+# hooks/duckherd.test.tsx has made-up strings that look like secrets: the redactSecrets fixtures
+# (fake keys and tokens, none of them real) and a UI element key that the generic rule mistakes
+# for an API key. Only these exact strings are allowed; any other secret, in that file or
+# elsewhere, is still reported. (No `paths` here: in gitleaks 8.x a global allowlist with
+# `paths` skips the whole file even with condition = "AND".)
+[allowlist]
+description = "synthetic test fixtures in hooks/duckherd.test.tsx"
+regexes = [
+  '''peer-tell-(input-)?abcd1234''',
+  '''peer-go-abcd1234''',
+  '''sk-ant-api03-(AbCdEfGhIjKlMnOp_qr|abcdefghijklmnopqrstuvwx)''',
+  '''ghp_abcdefghijklmnopqrstuvwxyz0123(456789)?''',
+  '''github_pat_11ABCDEFG0123456789_abcdefghijklmnop''',
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''xoxb-1234567890-abcdefghij''',
+  '''(k3yv4lue|tok9z|zz42s|hunter ?2)''',
+  '''MIIEowPRIV''',
+  '''abcdefghijklmnopqrstuvwxyz\.123''',
+]

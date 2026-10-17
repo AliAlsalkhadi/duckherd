@@ -1,0 +1,80 @@
+{
+  "name": "duckherd",
+  "version": "0.4.7",
+  "description": "A lead agent that plans and judges, and helper agents that do the work, shown as ducks.",
+  "author": {
+    "name": "Ali Alsalkhadi"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/AliAlsalkhadi/duckherd",
+  "homepage": "https://github.com/AliAlsalkhadi/duckherd",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "lessonsFile": {
+      "type": "string",
+      "title": "Lessons file",
+      "description": "The Markdown file lessons are saved to. ~/ means your home folder.",
+      "default": "~/.claude/duckherd/lessons.md"
+    },
+    "quickLooks": {
+      "type": "number",
+      "title": "Quick looks per request",
+      "description": "How many quick looks (Read, Grep, Bash and so on) the lead duck gets before it must hand work to a helper. 0 to 20.",
+      "default": 3
+    },
+    "throttleFiveHour": {
+      "type": "number",
+      "title": "Throttle: 5-hour threshold (%)",
+      "description": "The usage throttle tightens when the 5-hour window is this percent used. 1 to 100. Level 2 comes 10 points later, and not below 90.",
+      "default": 80
+    },
+    "throttleWeekMargin": {
+      "type": "number",
+      "title": "Throttle: weekly margin (points)",
+      "description": "The throttle tightens when weekly use runs this many points ahead of the pace of the week gone. 0 to 100.",
+      "default": 10
+    },
+    "keepWarm": {
+      "type": "string",
+      "title": "Keep-warm default",
+      "description": "Where keep-warm starts: auto, on or off. /keep-warm changes it and the choice is remembered.",
+      "default": "auto"
+    },
+    "chatEffort": {
+      "type": "string",
+      "title": "Chat effort default",
+      "description": "The lead duck's own effort at start: auto, off, or a level (low, medium, high, xhigh, max). /chat-effort changes it and the choice is remembered.",
+      "default": "auto"
+    },
+    "cmuxPath": {
+      "type": "string",
+      "title": "cmux command",
+      "description": "The cmux command line to use. Leave empty to find it (CMUX_BUNDLED_CLI_PATH, else the usual place). ~/ means your home folder.",
+      "default": ""
+    },
+    "sounds": {
+      "type": "boolean",
+      "title": "Sounds",
+      "description": "Whether the ducks' sounds are on at start. /crew on or off changes it and the choice is remembered.",
+      "default": true
+    },
+    "themesDir": {
+      "type": "string",
+      "title": "Themes folder",
+      "description": "A folder of extra themes: NAME.theme.json files, or folders holding duckherd-theme.json. Themes shipped by other installed plugins are found without it. ~/ means your home folder.",
+      "default": ""
+    },
+    "theme": {
+      "type": "string",
+      "title": "Theme",
+      "description": "The theme drawn at start: ducks, or the id of a theme that was found. /crew theme changes it and the choice is remembered.",
+      "default": "ducks"
+    },
+    "statusFiles": {
+      "type": "boolean",
+      "title": "Status files",
+      "description": "Write a small status file per lead duck to ~/.claude/duckherd/dashboard/ for outside tools. Off by default.",
+      "default": false
+    }
+  }
+}

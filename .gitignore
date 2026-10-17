@@ -1,0 +1,25 @@
+# OS and editor junk
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Dependencies (none are needed, but keep them out if a tool adds some)
+node_modules/
+
+# Type stubs Claude Code writes when it loads the mod: regenerated, never committed
+.claude-plugin/types/
+
+# Runtime data, if a test or a run ever writes it here
+lessons.md
+reviews/
+watch-helper.py
+*.log
+
+# Python / env junk
+__pycache__/
+*.pyc
+.DS_Store
+.env*
+.playwright-mcp/

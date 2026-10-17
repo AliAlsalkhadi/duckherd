@@ -1,0 +1,17 @@
+{
+  "name": "duckherd",
+  "description": "A lead agent that plans and judges, and helper agents that do the work, shown as ducks.",
+  "owner": {
+    "name": "Ali Alsalkhadi"
+  },
+  "plugins": [
+    {
+      "name": "duckherd",
+      "source": "./",
+      "description": "A lead agent that plans and judges, and helper agents that do the work, shown as ducks.",
+      "version": "0.4.7",
+      "homepage": "https://github.com/AliAlsalkhadi/duckherd",
+      "repository": "https://github.com/AliAlsalkhadi/duckherd"
+    }
+  ]
+}
