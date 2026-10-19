@@ -3575,7 +3575,7 @@ function countLines($: $, tool: string, ran: { deny?: unknown; isError?: boolean
 // the model mauve, effort by weight, + sage and − terracotta, calm meters sage, the 5-hour reset teal and the
 // week's mauve; labels and separators dim. A meter past its warning or error line takes the theme's colour.
 type Tone = 'calm' | 'warning' | 'error'
-type Meter = { key: string; label: string; pct: number; tone: Tone; left: string | undefined }
+type Meter = { key: string; label: string; pct: number; tone: Tone; left: string | undefined; leftShare?: number }
 // The share used at which each meter turns warning, then error.
 const METER_LINES: Record<string, [number, number]> = { context: [70, 85], five: [75, 90], week: [75, 90] }
 const meterTone = (key: string, pct: number): Tone => {
@@ -3586,10 +3586,11 @@ const meterTone = (key: string, pct: number): Tone => {
 // xterm-256 shades of the person's old status line (179, 67, 167, 107, 139, 73, 136, 131).
 const BAND_COLORS = { folder: '#D7AF5F', branch: '#5F87AF', clean: '#87AF5F', dirty: '#D75F5F', model: '#AF87AF', added: '#87AF5F', removed: '#D75F5F', calm: '#87AF5F', fiveLeft: '#5FAFAF', weekLeft: '#AF87AF', high: '#AF8700', max: '#AF5F5F', warm: '#87AF5F', cold: '#5F87AF', now: '#5FAFAF' }
 // Card outlines that stand apart: mid-tones that read on dark and light terminals. The helpers card (border, heading
-// and running count) is orange, the lead duck's gold, the context and usage card teal.
+// and running count) is orange, the lead duck's gold, the context and usage card soft violet, the plan sea green.
 const HELPERS_TINT = '#F28C38'
 const LEAD_TINT = '#E8B931'
-const USAGE_TINT = '#3EC6C9'
+const USAGE_TINT = '#AF87FF'
+const PLAN_TINT = '#5FD7AF'
 const effortStyle = (effort: string): Partial<Piece> =>
   effort === 'max' || effort === 'xhigh' ? { color: BAND_COLORS.max, bold: true } : effort === 'high' ? { color: BAND_COLORS.high, bold: true } : effort === 'medium' ? { color: BAND_COLORS.calm } : { dim: true }
 // The cache's last few minutes: warm still, but the next send had better come soon.
@@ -3679,7 +3680,7 @@ function metersOf(usage: SessionUsage | undefined, now: number): Meter[] {
     if (w === undefined) continue
     const pct = Math.round(w.percentUsed)
     const left = w.resetsAt === undefined ? Number.NaN : Date.parse(w.resetsAt) - now
-    meters.push({ key, label, pct, tone: pct >= 100 ? 'error' : meterTone(key, pct), left: left > 0 ? resetText(left) : undefined })
+    meters.push({ key, label, pct, tone: pct >= 100 ? 'error' : meterTone(key, pct), left: left > 0 ? resetText(left) : undefined, leftShare: left > 0 ? Math.min(1, left / WINDOW_MS[key]!) : undefined })
   }
 
   return meters
@@ -3723,36 +3724,40 @@ function projectPieces(s: StatusFacts, room: number): Piece[] {
   return fitLine(pieces, room)
 }
 
-// One meter on the usage card, by what is left: "ctx" dim (the 5-hour and the week go unlabelled, read by their
-// reset times), a 6-cell gauge (▰ left, ▱ dim), two spaces, the share left, and the time to its reset.
-// Calm it's sage with a dim reset; with little left (past its warning or error line on the share used) the gauge,
-// the share (bold) and the reset take the theme's colour.
+// One meter on the usage card, by what is used: "ctx" in its colour (the 5-hour and the week go unlabelled, read by their
+// reset times), a 6-cell gauge (▰ used, ▱ dim), two spaces, the share used, and the time to its reset.
+// Each has its own colour while calm (ctx cyan, the 5-hour sky blue, the week pink, the cache mint); past its warning
+// or error line the gauge and the share (bold) take the theme's colour. The reset is coloured by how much of its
+// window is left, whatever the meter's tone: green under 20%, amber to 60%, orange beyond.
 const GAUGE_CELLS = 6
+const METER_COLORS: Record<string, string> = { context: '#5FD7D7', five: '#5FAFFF', week: '#FF5FAF', cache: '#87D787' }
+const WINDOW_MS: Record<string, number> = { five: 5 * 3600000, week: 7 * 86400000 }
+const resetColor = (leftShare: number) => (leftShare < 0.2 ? '#5FD75F' : leftShare <= 0.6 ? '#D7AF5F' : '#FF875F')
 const gaugeCells = (share: number) => (share <= 0 ? 0 : Math.min(GAUGE_CELLS, Math.max(1, Math.round(share * GAUGE_CELLS))))
 function gaugePieces(m: Meter): Piece[] {
-  const left = Math.max(0, Math.min(100, 100 - m.pct))
-  const cells = gaugeCells(left / 100)
-  const tint = m.tone === 'calm' ? BAND_COLORS.calm : m.tone
+  const used = Math.max(0, Math.min(100, m.pct))
+  const cells = gaugeCells(used / 100)
+  const tint = m.tone === 'calm' ? (METER_COLORS[m.key] ?? BAND_COLORS.calm) : m.tone
   const pieces: Piece[] = [
-    { key: `u-${m.key}-l`, text: m.label, dim: true },
+    { key: `u-${m.key}-l`, text: m.label, color: tint },
     { key: `u-${m.key}-sp`, text: m.label === '' ? '' : ' ' },
     { key: `u-${m.key}-on`, text: '▰'.repeat(cells), color: tint },
     { key: `u-${m.key}-off`, text: '▱'.repeat(GAUGE_CELLS - cells), dim: true },
     { key: `u-${m.key}-sp2`, text: '  ' },
-    { key: `u-${m.key}`, text: `${left}%`, color: tint, ...(m.tone === 'calm' ? {} : { bold: true }) },
+    { key: `u-${m.key}`, text: `${used}%`, color: tint, ...(m.tone === 'calm' ? {} : { bold: true }) },
   ]
-  if (m.left !== undefined) pieces.push({ key: `u-${m.key}-left-sp`, text: ' ' }, { key: `u-${m.key}-left`, text: m.left, ...(m.tone === 'calm' ? { dim: true } : { color: m.tone }) })
+  if (m.left !== undefined) pieces.push({ key: `u-${m.key}-left-sp`, text: ' ' }, { key: `u-${m.key}-left`, text: m.left, ...(m.leftShare === undefined ? { dim: true } : { color: resetColor(m.leftShare) }) })
 
   return pieces.filter(p => p.text !== '')
 }
 
-// The prompt cache as a meter beside them: "cache" dim and a 6-cell gauge of its time-to-live left, no time and no
-// word. Sage while warm, warning in its last minutes, every cell empty in the cold colour once it has gone cold.
+// The prompt cache as a meter beside them: "cache" in its colour and a 6-cell gauge of its time-to-live left, no time and no
+// word. Its own colour while warm, warning in its last minutes, every cell empty in the cold colour once it has gone cold.
 function cachePieces(left: number, ttl: number): Piece[] {
   const cells = left <= 0 ? 0 : gaugeCells(Math.min(1, left / ttl))
-  const tint = left <= 0 ? BAND_COLORS.cold : left <= CACHE_SOON_MS ? 'warning' : BAND_COLORS.warm
+  const tint = left <= 0 ? BAND_COLORS.cold : left <= CACHE_SOON_MS ? 'warning' : (METER_COLORS.cache ?? BAND_COLORS.warm)
   const pieces: Piece[] = [
-    { key: 'u-cache-l', text: 'cache', dim: true },
+    { key: 'u-cache-l', text: 'cache', color: tint },
     { key: 'u-cache-sp', text: ' ' },
     { key: 'u-cache-on', text: '▰'.repeat(cells), color: tint },
     left <= 0 ? { key: 'u-cache-off', text: '▱'.repeat(GAUGE_CELLS), color: tint } : { key: 'u-cache-off', text: '▱'.repeat(GAUGE_CELLS - cells), dim: true },
@@ -4975,7 +4980,7 @@ export const register: Register = (on, options) => {
           ))}
         </Box>
       ))
-    // A card: rounded, its border in its role's colour (the lead duck's gold, the plan's the accent, the helpers' orange, the usage card's teal,
+    // A card: rounded, its border in its role's colour (the lead duck's gold, the plan's sea green, the helpers' orange, the usage card's violet,
     // what needs you the warning colour, the rest dim). Every tab stacks them with no row between.
     const card = (key: string, tint: string | 'dim', children: RenderChildren) => (
       <Box key={key} flexDirection="column" borderStyle="round" {...(tint === 'dim' ? { borderDimColor: true } : { borderColor: tint })} paddingX={1}>
@@ -4988,7 +4993,7 @@ export const register: Register = (on, options) => {
         {p.text}
       </Text>
     )
-    // The context and usage card, on top of every tab: one row of 6-cell gauges of what is left (wrapping when
+    // The context and usage card, on top of every tab: one row of 6-cell gauges of what is used (the cache's, of its time left) (wrapping when
     // narrow, a meter never dropped), the prompt cache the last of them; then the notes the tab has for it (the
     // compact offer, the handoff note, the throttle and usage warnings; only the Agents tab has any).
     const cacheLeft = facts.cacheLeft
@@ -4996,7 +5001,7 @@ export const register: Register = (on, options) => {
       (meters.length > 0 || cacheLeft !== undefined || notes.length > 0) &&
       card('usage', USAGE_TINT, [
         (meters.length > 0 || cacheLeft !== undefined) && (
-          <Box key="usage-row" flexDirection="row" flexWrap="wrap" columnGap={3}>
+          <Box key="usage-row" flexDirection="row" flexWrap="wrap" columnGap={2}>
             {meters.map(m => (
               <Box key={`meter-${m.key}`} flexDirection="row" flexShrink={0}>
                 {gaugePieces(m).map(textOf)}
@@ -5399,12 +5404,12 @@ export const register: Register = (on, options) => {
       const barDone = steps.length === 0 ? 0 : Math.round((doneSteps / steps.length) * barCols)
       const planCard =
         steps.length > 0 &&
-        card('plan', 'suggestion', [
+        card('plan', PLAN_TINT, [
           <Box key="plan-head" flexDirection="row" overflow="hidden">
-            <Text key="plan-word" bold color="suggestion">{'plan '}</Text>
-            {barDone > 0 && <Text key="plan-fill" color="suggestion">{'━'.repeat(barDone)}</Text>}
+            <Text key="plan-word" bold color={PLAN_TINT}>{'plan '}</Text>
+            {barDone > 0 && <Text key="plan-fill" color={PLAN_TINT}>{'━'.repeat(barDone)}</Text>}
             {barDone < barCols && <Text key="plan-rest" dimColor>{'━'.repeat(barCols - barDone)}</Text>}
-            <Text key="plan-n" color="suggestion">{` ${doneSteps}`}</Text>
+            <Text key="plan-n" color={PLAN_TINT}>{` ${doneSteps}`}</Text>
             <Text key="plan-of" dimColor>{` of ${steps.length}`}</Text>
           </Box>,
           doneSteps > 1 && (
@@ -5419,7 +5424,7 @@ export const register: Register = (on, options) => {
             const row = (
               <Box key={`plan-${i}`} flexDirection="row">
                 <Box key={`plan-m-${i}`} flexShrink={0} width={3}>
-                  {p.state === 'done' ? <Text color="success">✓</Text> : p.state === 'doing' ? <Text color="suggestion">◆</Text> : <Text dimColor>◇</Text>}
+                  {p.state === 'done' ? <Text color="success">✓</Text> : p.state === 'doing' ? <Text color={PLAN_TINT}>◆</Text> : <Text dimColor>◇</Text>}
                 </Box>
                 <Box key={`plan-t-${i}`} flexGrow={1} flexShrink={1}>
                   {p.state === 'doing' ? <Text bold>{p.text}</Text> : <Text dimColor>{p.text}</Text>}

@@ -115,22 +115,22 @@ test('the top of the Agents tab: a card with the task and its branch, idle or wo
   expect(await ui.find({ type: 'Text', text: /^ · quick looks 0\/3$/ })).toBeDefined()
   // At rest there's no "›" or "next:": the plan card just below shows what's next, its count on the right.
   expect(await ui.find({ type: 'Text', text: /^(› |next: )/ })).toBeUndefined()
-  expect((await ui.find({ key: 'plan' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: 'suggestion' })
-  expect((await ui.find({ type: 'Text', text: /^plan $/ }))?.props).toMatchObject({ bold: true, color: 'suggestion' })
-  expect((await textIn(ui, 'plan-head', /^ 1$/))?.props.color).toBe('suggestion')
+  expect((await ui.find({ key: 'plan' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: '#5FD7AF' })
+  expect((await ui.find({ type: 'Text', text: /^plan $/ }))?.props).toMatchObject({ bold: true, color: '#5FD7AF' })
+  expect((await textIn(ui, 'plan-head', /^ 1$/))?.props.color).toBe('#5FD7AF')
   expect(await ui.find({ type: 'Text', text: /^ of 3$/ })).toBeDefined()
   // The step under way is bold; the rest dim.
   expect((await ui.find({ type: 'Text', text: /^Commit and open the PR\?$/ }))?.props.bold).toBe(true)
   expect((await ui.find({ type: 'Text', text: /^Watch CI$/ }))?.props.dimColor).toBe(true)
   expect((await ui.find({ type: 'Text', text: /^yours$/ }))?.props.color).toBe('warning')
   expect(await ui.find({ type: 'Text', text: /you ←/ })).toBeUndefined()
-  // Status colours are theme keys, never hex: the plan's marks too (✓ done, ◆ under way, ◇ to do).
+  // Status colours are theme keys, never hex, but the plan's ◆ under way is the plan's sea green (✓ done, ◇ to do).
   expect((await ui.find({ type: 'Text', text: /^✓$/ }))?.props.color).toBe('success')
-  expect((await ui.find({ type: 'Text', text: /^◆$/ }))?.props.color).toBe('suggestion')
+  expect((await ui.find({ type: 'Text', text: /^◆$/ }))?.props.color).toBe('#5FD7AF')
   expect((await ui.find({ type: 'Text', text: /^◇$/ }))?.props.dimColor).toBe(true)
   // The bar fills the heading row between "plan" and the count, the done share in the accent; one row, no blank under it.
   expect(await textUnder(ui, 'plan-head')).toBe(`plan ${'━'.repeat(88 - 4 - 5 - ' 1 of 3'.length - 1)} 1 of 3`)
-  expect((await textIn(ui, 'plan-head', /^━+$/))?.props.color).toBe('suggestion')
+  expect((await textIn(ui, 'plan-head', /^━+$/))?.props.color).toBe('#5FD7AF')
   expect(await ui.find({ key: 'plan-gap' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /DUCKHERD · TASK|HELPER MODEL/ })).toBeUndefined()
   // The model line, ending in the helpers' model.
@@ -353,7 +353,7 @@ test('the band shows the prompt cache warm with the time left, then cold, and dr
   expect((await at(40)).line).toBe('claude-duckherd  main ✓  ·  Opus 5.5')
 })
 
-test('the usage card shows the prompt cache as the last meter: its time to live left, sage, then warning, then empty in the cold colour', async ($, on) => {
+test('the usage card shows the prompt cache as the last meter: its time to live left, mint, then warning, then empty in the cold colour', async ($, on) => {
   const clock = statusSession(on, { model: 'claude-opus-5-5', usage: () => ({ value: bandUsage(14, [17, 3 * H], [3, 6 * D]) }) })
   on('turn.complete', () => ({ text: '' }))
   on('prompt.submit', (_, e) => ({ text: e.text }) as never)
@@ -373,8 +373,8 @@ test('the usage card shows the prompt cache as the last meter: its time to live 
   let cache = await shown()
   expect(cache.keys).toEqual(['meter-context', 'meter-five', 'meter-week', 'meter-cache'])
   expect(cache.line).toBe('cache ▰▰▰▰▰▰')
-  expect(cache.style('cache')).toMatchObject({ dimColor: true })
-  expect(cache.style('▰▰▰▰▰▰')).toMatchObject({ color: '#87AF5F' })
+  expect(cache.style('cache')).toMatchObject({ color: '#87D787' })
+  expect(cache.style('▰▰▰▰▰▰')).toMatchObject({ color: '#87D787' })
   // Half its hour gone, half the gauge.
   await clock.advance(30 * 60000)
   cache = await shown()
@@ -474,14 +474,14 @@ test('the Agents tab is rounded cards sitting directly stacked with no gap row, 
   const style = async (ui: Drawn, text: string, key?: string) => (key !== undefined ? await textsUnder(ui, key) : await ui.findAll({ type: 'Text' })).find(t => t.text === text)?.props
 
   const pane = await $.ui.mount(PANE_TERM)
-  // The cards in order, sitting directly stacked with no gap row; each rounded, its border by its role: the lead duck's and the
-  // plan's the accent, the usage card dim, the helpers' dim while there are none.
+  // The cards in order, sitting directly stacked with no gap row; each rounded, its border by its role: the lead duck's gold and the
+  // plan's sea green, the usage card dim, the helpers' dim while there are none.
   const agents = (await pane.find({ key: 'agents' })) as unknown as Node
   expect(agents.props.rowGap).toBe(0)
   expect(kids(agents).map(k => k.props.key)).toEqual(['usage', 'top', 'plan', 'helpers'])
-  expect((await pane.find({ key: 'plan' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: 'suggestion', paddingX: 1 })
+  expect((await pane.find({ key: 'plan' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: '#5FD7AF', paddingX: 1 })
   expect((await pane.find({ key: 'top' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: '#E8B931', paddingX: 1 })
-  expect((await pane.find({ key: 'usage' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: '#3EC6C9', paddingX: 1 })
+  expect((await pane.find({ key: 'usage' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: '#AF87FF', paddingX: 1 })
   expect((await pane.find({ key: 'helpers' }))?.props).toMatchObject({ borderStyle: 'round', borderDimColor: true, paddingX: 1 })
   // No band and no rules in the tab.
   expect(await pane.find({ key: 'band' })).toBeUndefined()
@@ -500,20 +500,24 @@ test('the Agents tab is rounded cards sitting directly stacked with no gap row, 
   expect(await pane.find({ type: 'Text', text: /^on $/ })).toBeUndefined()
   expect((await pane.findAll({ type: 'Text' })).filter(t => t.text === 'main').length).toBe(1)
   expect(await pane.find({ type: 'Text', text: /^quick looks 0\/3$/ })).toBeDefined()
-  // The usage card: one row of 6-cell gauges of what is left (no heading, no blank row), calm in sage with dim
+  // The usage card: one row of 6-cell gauges of what is used (no heading, no blank row), each calm in its own colour with dim
   // resets; only ctx is labelled, the 5-hour and the week read by their reset times.
   expect(await pane.find({ key: 'usage-head' })).toBeUndefined()
   expect(await pane.find({ key: 'usage-gap' })).toBeUndefined()
-  expect(await textUnder(pane, 'meter-context')).toBe('ctx ▰▰▰▰▰▱  86%')
-  expect(await textUnder(pane, 'meter-five')).toBe('▰▰▰▰▰▱  83% 3h 05m')
-  expect(await textUnder(pane, 'meter-week')).toBe('▰▰▰▰▰▰  97% 6d')
+  expect(await textUnder(pane, 'meter-context')).toBe('ctx ▰▱▱▱▱▱  14%')
+  expect(await textUnder(pane, 'meter-five')).toBe('▰▱▱▱▱▱  17% 3h 05m')
+  expect(await textUnder(pane, 'meter-week')).toBe('▰▱▱▱▱▱  3% 6d')
   expect(await pane.find({ type: 'Text', text: /^(5h|7d)$/ })).toBeUndefined()
-  expect(await style(pane, 'ctx', 'meter-context')).toMatchObject({ dimColor: true })
-  expect(await style(pane, '▰▰▰▰▰', 'meter-context')).toMatchObject({ color: '#87AF5F' })
-  expect(await style(pane, '▱', 'meter-context')).toMatchObject({ dimColor: true })
-  expect(await style(pane, '86%')).toMatchObject({ color: '#87AF5F' })
-  expect((await style(pane, '86%'))?.bold).toBeUndefined()
-  expect(await style(pane, '3h 05m')).toMatchObject({ dimColor: true })
+  expect(await style(pane, 'ctx', 'meter-context')).toMatchObject({ color: '#5FD7D7' })
+  expect(await style(pane, '▰', 'meter-context')).toMatchObject({ color: '#5FD7D7' })
+  expect(await style(pane, '▰', 'meter-five')).toMatchObject({ color: '#5FAFFF' })
+  expect(await style(pane, '▰', 'meter-week')).toMatchObject({ color: '#FF5FAF' })
+  expect(await style(pane, '▱▱▱▱▱', 'meter-context')).toMatchObject({ dimColor: true })
+  expect(await style(pane, '14%')).toMatchObject({ color: '#5FD7D7' })
+  expect((await style(pane, '14%'))?.bold).toBeUndefined()
+  // Reset times by the share of the window left: 3h 05m of 5h and 6d of 7d are far (orange).
+  expect(await style(pane, '3h 05m')).toMatchObject({ color: '#FF875F' })
+  expect(await style(pane, '6d')).toMatchObject({ color: '#FF875F' })
   await pane.unmount()
 
   // Narrow: the folder name shortens before the branch goes; no meter is dropped.
@@ -537,14 +541,23 @@ test('the Agents tab is rounded cards sitting directly stacked with no gap row, 
   expect(await style(hot, '●', 'task-project')).toMatchObject({ color: '#D75F5F' })
   expect(await style(hot, '+3')).toMatchObject({ color: '#87AF5F' })
   expect(await style(hot, '−1')).toMatchObject({ color: '#D75F5F' })
-  // Little left: 12% of the context is error, 18% of the 5-hour warning.
-  expect(await textUnder(hot, 'meter-context')).toBe('ctx ▰▱▱▱▱▱  12%')
-  expect(await style(hot, '▰', 'meter-context')).toMatchObject({ color: 'error' })
-  expect(await style(hot, '12%')).toMatchObject({ color: 'error', bold: true })
-  expect(await style(hot, '18%')).toMatchObject({ color: 'warning', bold: true })
-  expect(await style(hot, '1h 10m')).toMatchObject({ color: 'warning' })
-  expect((await hot.find({ key: 'usage' }))?.props).toMatchObject({ borderColor: '#3EC6C9' })
+  // Much used: 88% of the context is error, 82% of the 5-hour warning.
+  expect(await textUnder(hot, 'meter-context')).toBe('ctx ▰▰▰▰▰▱  88%')
+  expect(await style(hot, '▰▰▰▰▰', 'meter-context')).toMatchObject({ color: 'error' })
+  expect(await style(hot, '88%')).toMatchObject({ color: 'error', bold: true })
+  expect(await style(hot, '82%')).toMatchObject({ color: 'warning', bold: true })
+  // 1h 10m of 5h is 23% left: the middle band (amber), not the meter's warning.
+  expect(await style(hot, '1h 10m')).toMatchObject({ color: '#D7AF5F' })
+  expect((await hot.find({ key: 'usage' }))?.props).toMatchObject({ borderColor: '#AF87FF' })
   await hot.unmount()
+
+  // Near a reset (under 20% of the window left): 40m of the 5-hour and 1d of the week are green.
+  usage = bandUsage(14, [17, 40 * 60000 + 30000], [3, D + H])
+  await clock.advance(6000)
+  const near = await $.ui.mount(PANE_TERM)
+  expect(await style(near, '40m')).toMatchObject({ color: '#5FD75F' })
+  expect(await style(near, '1d')).toMatchObject({ color: '#5FD75F' })
+  await near.unmount()
 
   // A branch other than the project line's (another worktree's, say) still shows under the task.
   await $.command.run({ command: 'duckherd', args: 'Ship it (branch fix/other)' } as never)
@@ -4944,11 +4957,11 @@ test('/throttle: the report, helper effort capped by the weekly pace, the except
   ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /^Throttle off$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^Usage $/ })).toBeDefined()
-  // The usage card's 5-hour meter shows it too, as the 4% left, past its error line; the usage line under the plan
-  // says 96% in the warning colour.
-  expect(await textUnder(ui, 'meter-five')).toMatch(/^▰▱▱▱▱▱  4%/)
-  expect((await textIn(ui, 'meter-five', /^4%$/))?.props.color).toBe('error')
-  expect((await ui.findAll({ type: 'Text', text: /^96%$/ })).map(t => t.props.color)).toEqual(['warning'])
+  // The usage card's 5-hour meter shows it too, as the 96% used, past its error line; the usage line under the plan
+  // says 96% in the warning colour (the meter's own 96% is error).
+  expect(await textUnder(ui, 'meter-five')).toMatch(/^▰▰▰▰▰▰  96%/)
+  expect((await textIn(ui, 'meter-five', /^96%$/))?.props.color).toBe('error')
+  expect((await ui.findAll({ type: 'Text', text: /^96%$/ })).map(t => t.props.color)).toEqual(['error', 'warning'])
   expect(await ui.find({ type: 'Text', text: /^ of your 5-hour limit/ })).toBeDefined()
   await ui.unmount()
   expect(await throttle('sideways')).toContain('Type /throttle')
