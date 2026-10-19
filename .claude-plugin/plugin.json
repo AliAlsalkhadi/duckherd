@@ -1,6 +1,6 @@
 {
   "name": "duckherd",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "A lead agent that plans and judges, and helper agents that do the work, shown as ducks.",
   "author": {
     "name": "Ali Alsalkhadi"

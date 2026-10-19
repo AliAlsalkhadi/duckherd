@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.8 - 2026-10-19
 
 - The usage card's gauges show what is used, not what is left: ctx 7% rather than 93%, and the bar fills as it is used (the cache's still shows its time left). Each meter has its own colour while calm (ctx cyan, the 5-hour blue, the week magenta, the cache mint), turning warning and error at the same lines as before, and the gaps between them are narrower. The reset times are coloured by how much of their window is left: green under 20% (under an hour of the 5-hour, about 1.4 days of the week), amber up to 60%, orange beyond.
 - The "ctx" and "cache" labels take their meter's colour (the cache's follows its bar through warning and cold).
