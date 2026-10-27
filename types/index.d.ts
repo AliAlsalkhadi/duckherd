@@ -71,8 +71,12 @@ export type AgentView = {
   why?: string
   // The report made easy to read: outcome, what it checked, what it found, the next step.
   digest?: Digest
-  // Its context when it finished, in tokens: what Claude Code's agent list shows for it.
+  // Every token its requests used so far, added up (its `spent`, all four kinds together).
   tokens?: number
+  // The same by kind, as the API counted each of its requests.
+  spent?: Spent
+  // The most context one of its requests held: the largest input + cache read + cache write. Not shown in the panel.
+  peakContext?: number
   // The last message the person sent it with /tell, and when: its duck spots it land.
   told?: { at: number; text: string }
   // Its "tests pass", held to its own test runs: seen passing, or why it doesn't hold.
@@ -80,14 +84,45 @@ export type AgentView = {
   claimDoubt?: string | undefined
   // The task it worked for (its title), so finished helpers group under it.
   task?: string | undefined
-  // The files it changed, with lines added and taken out.
+  // The files it changed, with lines added and taken out, as its own edits count them (absolute paths).
   files?: { path: string; added: number; removed: number }[] | undefined
+  // Once it finished: what it changed in each file since it first touched it, in the checkout each is in (its own
+  // worktree if it used one).
+  diff?: HelperFile[] | undefined
+  // The helper that started it, for a helper started by another helper.
+  parent?: string | undefined
   // What it waits for the person to approve, and since when; cleared once that step runs.
   asking?: { at: number; text: string } | undefined
   // Since when its turn has ended but it waits on background work it started (a shell, a monitor),
   // which wakes it; it isn't finished until Claude Code says so.
   background?: number | undefined
 }
+
+// Tokens as the API counted them, each kind apart so a price can be put on them: input neither read from nor written
+// to the prompt cache, output, read from the cache, and written to it.
+export type Spent = { input: number; output: number; cacheRead: number; cacheWrite: number }
+
+// What a task or a day used: the lead duck's own requests, its helpers', and both by the model that answered.
+export type Spend = { lead: Spent; helpers: Spent; models: Record<string, Spent> }
+
+// A task's record, by its name: what it used, and when it was at work (the lead duck's turns and its helpers' runs,
+// merged so time when both worked counts once).
+export type TaskSpend = { spend: Spend; spans: [number, number][]; firstAt: number; lastAt: number }
+
+// A task for the panel: its name ('' for work before any task was named), whether it is the one in hand, its time
+// at work so far, its tokens, and what they were.
+export type TaskTotal = { name: string; isCurrent: boolean; busyMs: number; tokens: number; spend: Spend; firstAt: number; lastAt: number }
+
+// A file a finished helper changed: the checkout it is in and its path there, and the lines added and taken out
+// between the file as it was when the helper first touched it (or when another helper or the lead duck did, while it
+// ran) and as it is at the end. `counted` is 'edits' when the file couldn't be read, so the helper's own edits gave the
+// lines, and 'shell' when a shell command changed it before any copy was taken, so the command's own diff gave them
+// (approximate). `alsoBy`: the others (helper letters, or the lead duck) that edited it in that time, whose lines are in it too.
+export type HelperFile = { root: string; path: string; added: number; removed: number; isNew?: true; counted: 'git' | 'edits' | 'shell'; alsoBy?: string[] }
+
+// A file a helper changed, with which helper: its diff's count once it finished, its own edits' count while it runs.
+// `file` is the absolute path, to match the Changes tab's rows.
+export type HelperChange = HelperFile & { file: string; helper: string; letter: string; color: string; isRunning: boolean }
 
 export type Digest = {
   summary: string
@@ -268,6 +303,8 @@ declare module 'claude-code' {
       sessionOpen: string | null
       // What this lead duck sent other sessions, newest first, kept a day (the status file's messages, kept only with the statusFiles setting on).
       messages: SentMessage[]
+      // What each task of this lead duck's used, by its name.
+      taskSpend: Record<string, TaskSpend>
     }
   }
 }

@@ -60,8 +60,15 @@ type Frame = readonly string[]
 const CLEAR = '.'.repeat(20)
 const blank = (): Frame => Array<string>(12).fill(CLEAR)
 const put = (f: Frame, y: number, x: number, s: string): Frame => f.map((r, i) => (i === y ? r.slice(0, x) + s + r.slice(x + s.length) : r))
-const over = (...layers: Frame[]): Frame =>
-  blank().map((row, y) => [...row].map((_, x) => layers.reduce((c, l) => ((l[y]?.[x] ?? '.') !== '.' ? (l[y]?.[x] ?? c) : c), '.')).join(''))
+// Layers stack on the first one's own size (20 x 12 for the built-in ducks, 4 x that for a scale 4 theme).
+const over = (...layers: Frame[]): Frame => {
+  const h = layers[0]?.length ?? 12
+  const w = layers[0]?.[0]?.length ?? 20
+
+  return Array.from({ length: h }, (_, y) => Array.from({ length: w }, (_, x) => layers.reduce((c, l) => ((l[y]?.[x] ?? '.') !== '.' ? (l[y]?.[x] ?? c) : c), '.')).join(''))
+}
+// A 1 x frame drawn at scale k: every pixel a k x k block.
+const scaled = (f: Frame, k: number): Frame => (k === 1 ? f : f.flatMap(r => Array.from({ length: k }, () => [...r].map(c => c.repeat(k)).join(''))))
 const shift = (f: Frame, dx: number, dy: number): Frame => f.map((row, y) => [...row].map((_, x) => f[y - dy]?.[x - dx] ?? '.').join(''))
 const only = (f: Frame, from: number, to: number): Frame => f.map((r, i) => (i >= from && i <= to ? r : CLEAR))
 const corner = (art: string[]): Frame => blank().map((r, i) => (art[i] !== undefined ? (art[i] + r).slice(0, 20) : r))
@@ -297,8 +304,8 @@ type Loop = { frames: Frame[]; frameMs: number }
 
 // ---------------------------------------------------------------- themes from outside
 
-// Another set of creatures, drawn from a theme file (hooks/themes.ts reads and checks it). Frames are the same
-// size as the ducks' (helpers 20 x 12, the lead's 28 x 16), a letter a pixel, '.' clear; `palette` says what each
+// Another set of creatures, drawn from a theme file (hooks/themes.ts reads and checks it). Frames are the
+// ducks' size unless the theme sets its own (helpers 20 x 12, the lead's 28 x 16, times the scale), a letter a pixel, '.' clear; `palette` says what each
 // letter is. The panel hands each drawing only the one helper's art it needs, so what crosses to the terminal's
 // own duck view stays small.
 export type ThemeEnds = {
@@ -334,15 +341,20 @@ export type ThemeLeadArt = {
 export type ThemeMarks = { star: string; starLit: string; drop: string; dropLit: string; asked: string; told: string }
 export type ThemeArt = {
   id: string
+  // Pixels per 1 x pixel (absent is 1): at 4 the frames are four times as wide and tall, drawn into the same space.
+  scale?: number
   palette: Record<string, string>
   // The letters of the marks drawn over a helper (an Opus star, a stuck helper's drop, "?" and "!"), from the palette.
   marks?: ThemeMarks
+  // False: no star on Opus helpers.
+  opusMark?: false
   // Where a stuck helper's sweat drop (row, column) and "!" or "?" (column) go.
   stuck?: { drop: [number, number]; mark: number }
   helper?: ThemeHelperArt
   lead?: ThemeLeadArt
 }
 const themeKey = (t: ThemeArt | undefined) => (t === undefined ? '' : `${t.id}/${t.helper?.name ?? ''}`)
+export const scaleOf = (t: ThemeArt | undefined) => t?.scale ?? 1
 
 // The panel redraws the ducks every BEAT; every frame lasts a whole number of beats, so none is shown
 // longer than its neighbours (uneven frames read as lag).
@@ -527,7 +539,7 @@ function pick(s: DuckScene): Frame {
   if (s.noteMs !== undefined && s.noteMs < NOTE_MS) {
     // The envelope flies in over what it's doing, a block at a time, then the duck spots it.
     const flying = Math.floor(s.noteMs / (BEAT * 2))
-    if (flying < 3) return over(frameAt(loop, s.at, start), envelope(flying * 2))
+    if (flying < 3) return over(frameAt(loop, s.at, start), scaled(envelope(flying * 2), scaleOf(s.theme)))
     return end.noticed[Math.min(end.noticed.length - 1, flying - 3)] ?? pose(BIRDS[s.bird])
   }
   if (s.failedMs !== undefined && s.failedMs < FLINCH_MS) return end.flinch[Math.min(end.flinch.length - 1, Math.floor(s.failedMs / (FLINCH_MS / end.flinch.length)))] ?? pose(BIRDS[s.bird])
@@ -550,13 +562,15 @@ function blinking(s: DuckScene, frame: Frame, start: number): Frame {
   if (blink === undefined || (s.at + start * 53) % BLINK_EVERY_MS >= BEAT) return frame
   const [eye, lid] = blink
 
-  return frame.map((row, y) => (y < 8 ? row.split(eye + eye).join(lid + lid) : row))
+  const head = 8 * scaleOf(s.theme) // the head's rows: the top 8 pixels of a 1 x frame, whatever its size
+
+  return frame.map((row, y) => (y < head ? row.split(eye + eye).join(lid + lid) : row))
 }
 
 // One row of a drawing, as runs of one style each.
 export type Run = { text: string; color?: string; backgroundColor?: string }
 
-// How wide a duck is, in cells.
+// How wide a duck is, in cells (a theme may set its own frame size: themes.ts helperColumns).
 export const CREATURE_WIDTH = 10
 
 // The octant for each set of lit pixels (bit 2y + x of a cell's 2 x 4): the octant block in order,
@@ -631,7 +645,7 @@ export function pictureOf(d: Drawing): string {
       pixels.push(at)
     }
   }
-  const png = base64(pngOf(d.frame[0]?.length ?? 0, d.frame.length, pixels, letters.map(c => (c === '.' ? '#000000' : (palette[c] ?? '#000000'))), 8))
+  const png = base64(pngOf(d.frame[0]?.length ?? 0, d.frame.length, pixels, letters.map(c => (c === '.' ? '#000000' : (palette[c] ?? '#000000'))), 8 / scaleOf(d.theme)))
   if (pictures.size > 3000) pictures.clear()
   pictures.set(key, png)
 
@@ -647,11 +661,24 @@ function rowsOf(frame: Frame, color: string, breed = 0, theme?: ThemeArt): Run[]
   if (hit !== undefined) return hit
   const palette = paletteOf(color, breed, theme)
   const rows: Run[][] = []
-  for (let y = 0; y < frame.length; y += 4) {
+  const k = scaleOf(theme)
+  // A larger frame is shrunk to the 1 x size: each k x k block becomes the colour most of it has (a drawn pixel over a clear one on a tie).
+  const shrunk = (y: number, x: number) => {
+    const counts = new Map<string | undefined, number>()
+    for (let dy = 0; dy < k; dy++) {
+      for (let dx = 0; dx < k; dx++) {
+        const c = palette[frame[y * k + dy]?.[x * k + dx] ?? '.']
+        counts.set(c, (counts.get(c) ?? 0) + 1)
+      }
+    }
+
+    return [...counts].sort((a, b) => b[1] - a[1] || (a[0] === undefined ? 1 : 0) - (b[0] === undefined ? 1 : 0))[0]?.[0]
+  }
+  for (let y = 0; y < frame.length / k; y += 4) {
     const runs: Run[] = []
-    for (let x = 0; x < (frame[0]?.length ?? 0); x += 2) {
+    for (let x = 0; x < (frame[0]?.length ?? 0) / k; x += 2) {
       const pixels: (string | undefined)[] = []
-      for (let dy = 0; dy < 4; dy++) for (let dx = 0; dx < 2; dx++) pixels.push(palette[frame[y + dy]?.[x + dx] ?? '.'])
+      for (let dy = 0; dy < 4; dy++) for (let dx = 0; dx < 2; dx++) pixels.push(shrunk(y + dy, x + dx))
       const next = cell(pixels)
       const last = runs[runs.length - 1]
       if (last !== undefined && last.color === next.color && last.backgroundColor === next.backgroundColor) last.text += next.text
@@ -669,7 +696,7 @@ function rowsOf(frame: Frame, color: string, breed = 0, theme?: ThemeArt): Run[]
 export function duckDrawing(s: DuckScene): Drawing {
   let frame = s.stuck !== undefined && s.ended === undefined ? stuckFrame(s) : pick(s)
   const m = marksOf(s.theme)
-  if (s.isOpus === true) frame = paintClear(frame, STAR.map(([y, x, bright]) => [y, x, m[bright ? 'starLit' : 'star']]))
+  if (s.isOpus === true && s.theme?.opusMark !== false) frame = paintClear(frame, STAR.map(([y, x, bright]) => [y, x, m[bright ? 'starLit' : 'star']]), scaleOf(s.theme))
 
   // Ducklings come in their breed's colours too, as grown ducks do.
   return { frame, color: s.color ?? DUCK_COLORS.x ?? '#B48EF0', breed: s.breed ?? 0, ...(s.theme !== undefined ? { theme: s.theme } : {}) }
@@ -680,9 +707,10 @@ export function duckDrawing(s: DuckScene): Drawing {
 const MARKS: ThemeMarks = { star: 'Q', starLit: 'U', drop: 'b', dropLit: 'B', asked: 'a', told: 'R' }
 const marksOf = (t: ThemeArt | undefined): ThemeMarks => t?.marks ?? MARKS
 const STAR: [number, number, boolean][] = [[0, 1, false], [1, 0, false], [1, 1, true], [1, 2, false], [2, 1, false]]
-function paintClear(frame: Frame, cells: [number, number, string][]): Frame {
+// `k`: the frame's scale, each cell then a k x k block.
+function paintClear(frame: Frame, cells: [number, number, string][], k = 1): Frame {
   const rows = frame.map(r => [...r])
-  for (const [y, x, c] of cells) if (rows[y]?.[x] === '.') rows[y]![x] = c
+  for (const [y, x, c] of cells) for (let dy = 0; dy < k; dy++) for (let dx = 0; dx < k; dx++) if (rows[y * k + dy]?.[x * k + dx] === '.') rows[y * k + dy]![x * k + dx] = c
 
   return rows.map(r => r.join(''))
 }
@@ -695,12 +723,13 @@ function stuckFrame(s: DuckScene): Frame {
   // Ducks face right, their head high on the right; a theme says where its own head is.
   const [dropY, dropX] = s.theme?.stuck?.drop ?? [1, 8]
   const drop: [number, number][] = [[dropY + beat, dropX], [dropY + 1 + beat, dropX]]
-  const at = s.theme?.stuck?.mark ?? 18
+  // Ducks face right, the mark two columns in from the right edge; a theme says where its own goes (the frame's width in 1 x pixels less two, by default).
+  const at = s.theme?.stuck?.mark ?? (base[0]?.length ?? 20) / scaleOf(s.theme) - 2
   const mark: [number, number][] =
     s.stuck === 'told' ? (beat === 0 ? [[0, at], [1, at], [2, at], [4, at]] : []) : [[0, at - 1], [0, at], [1, at + 1], [2, at], [4, at]]
   const color = s.stuck === 'told' ? m.told : m.asked
 
-  return paintClear(base, [...drop.map(([y, x], i): [number, number, string] => [y, x, i === 0 ? m.drop : m.dropLit]), ...mark.map(([y, x]): [number, number, string] => [y, x, color])])
+  return paintClear(base, [...drop.map(([y, x], i): [number, number, string] => [y, x, i === 0 ? m.drop : m.dropLit]), ...mark.map(([y, x]): [number, number, string] => [y, x, color])], scaleOf(s.theme))
 }
 export function duckRows(s: DuckScene): Run[][] {
   const d = duckDrawing(s)
@@ -950,7 +979,7 @@ function themedLead(theme: ThemeArt, lead: ThemeLeadArt, at: number, busyMs: num
   if (busyMs === undefined || busyMs < POWER_UP_MS || helpersRunning === 0 || lead.flare === undefined) return { frame, color, theme }
   const flare = [...(lead.flare.small[step % Math.max(1, lead.flare.small.length)] ?? []), ...(helpersRunning >= BLUE_AT ? (lead.flare.big[step % Math.max(1, lead.flare.big.length)] ?? []) : [])]
 
-  return { frame: paintClear(frame, flare.map(([y, x, c]): [number, number, string] => [y, x, c])), color, theme }
+  return { frame: paintClear(frame, flare.map(([y, x, c]): [number, number, string] => [y, x, c]), scaleOf(theme)), color, theme }
 }
 
 // ---------------------------------------------------------------- a duck that moves on its own

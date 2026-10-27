@@ -1,6 +1,6 @@
 // The Changes tab, like VS Code's Source Control: git's own output read into files, a folder tree and
 // a diff. Pure, so the tests hold it without git.
-import type { DiffLine, FileChange, GitView } from '../types'
+import type { DiffLine, FileChange, GitView, HelperFile } from '../types'
 
 // Files listed at most; a huge change set says how many more there are.
 export const FILES_SHOWN = 400
@@ -246,4 +246,86 @@ export function patchCounts(tool: string, result: unknown): { added: number; rem
   if (tool === 'Write' && r.type === 'create' && hunks.length === 0 && typeof r.content === 'string' && r.content !== '') added = r.content.split(/\r?\n/).length
 
   return { added, removed }
+}
+
+// A finished helper's files, a line each as `git diff --stat` lists them: the path (in its checkout), lines added and
+// taken out since it first touched the file, "new" for a file that wasn't there then, "by its edits" where its content
+// couldn't be read so its own edits gave the lines, "edited by shell" where a shell command changed it before a copy was
+// taken, and who else edited it while it ran. The first `max`, how many
+// more, then the total.
+export function helperStat(files: readonly HelperFile[], max = 12): string {
+  const shown = files.slice(0, max).map(f => `${f.path} | +${f.added} -${f.removed}${f.isNew === true ? ' (new)' : ''}${f.counted === 'edits' ? ' (by its edits)' : f.counted === 'shell' ? ' (edited by shell, counts approximate)' : ''}${f.alsoBy !== undefined && f.alsoBy.length > 0 ? ` (also edited by ${f.alsoBy.join(', ')})` : ''}`)
+  const added = files.reduce((n, f) => n + f.added, 0)
+  const removed = files.reduce((n, f) => n + f.removed, 0)
+  const roots = [...new Set(files.map(f => f.root).filter(r => r !== ''))]
+
+  return [
+    ...(roots.length > 0 ? [`in ${roots.join(', ')}`] : []),
+    ...shown,
+    ...(files.length > max ? [`and ${files.length - max} more`] : []),
+    `${files.length} file${files.length === 1 ? '' : 's'} changed, +${added} -${removed}`,
+  ].join('\n')
+}
+
+// A file's lines, for a line diff: a last newline ends the last line rather than starting an empty one.
+function linesOf(text: string): string[] {
+  if (text === '') return []
+  const lines = text.split('\n')
+  if (lines[lines.length - 1] === '') lines.pop()
+
+  return lines
+}
+
+// Lines added and taken out between two versions of a file, as git's diff counts them: the shortest edit (Myers),
+// whose length D gives both, since added - removed is the change in line count. Past a bound on the work it counts
+// lines by how many of each there are instead. `null` is no file.
+export function lineChanges(before: string | null, after: string | null): { added: number; removed: number } {
+  const a = linesOf(before ?? '')
+  const b = linesOf(after ?? '')
+  let start = 0
+  while (start < a.length && start < b.length && a[start] === b[start]) start++
+  let endA = a.length
+  let endB = b.length
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--
+    endB--
+  }
+  const n = endA - start
+  const m = endB - start
+  if (n === 0 || m === 0) return { added: m, removed: n }
+  const ids = new Map<string, number>()
+  const id = (line: string) => {
+    let k = ids.get(line)
+    if (k === undefined) ids.set(line, (k = ids.size))
+    return k
+  }
+  const x0 = Int32Array.from(a.slice(start, endA), id)
+  const y0 = Int32Array.from(b.slice(start, endB), id)
+  const max = Math.min(n + m, Math.max(64, Math.floor(40_000_000 / (n + m))))
+  const off = max + 1
+  const v = new Int32Array(2 * max + 3)
+  for (let d = 0; d <= max; d++) {
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[off + k - 1]! < v[off + k + 1]!) ? v[off + k + 1]! : v[off + k - 1]! + 1
+      let y = x - k
+      while (x < n && y < m && x0[x] === y0[y]) {
+        x++
+        y++
+      }
+      v[off + k] = x
+      if (x >= n && y >= m) return { added: (d + m - n) / 2, removed: (d - m + n) / 2 }
+    }
+  }
+  const left = new Map<number, number>()
+  for (const k of x0) left.set(k, (left.get(k) ?? 0) + 1)
+  let kept = 0
+  for (const k of y0) {
+    const c = left.get(k) ?? 0
+    if (c > 0) {
+      left.set(k, c - 1)
+      kept++
+    }
+  }
+
+  return { added: m - kept, removed: n - kept }
 }

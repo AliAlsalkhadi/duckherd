@@ -10,21 +10,32 @@
 // The file (all sizes in pixels; a frame is rows of letters, '.' clear, each letter a colour in `palette`):
 //  {
 //    "duckherdTheme": 1, "id": "pond-night", "title": "Pond at night",
+//    "scale": 1,                                                 optional, 1 or 4: at 4 every frame is 4 times as wide and tall
+//                                                                (helpers 80 x 48, lead 112 x 64) and fills the same space on screen;
+//                                                                "stuck" and the flare's cells stay in the 1 x grid
+//    "helperSize": [80, 48], "leadSize": [112, 64],              optional: the frame size in art pixels, [width, height]. A cell of the
+//                                                                terminal is 2 x 4 pixels at scale 1 (8 x 16 at scale 4), so the width is a
+//                                                                multiple of 2 (8) and the height of 4 (16); at most 40 cells wide and 8 rows
+//                                                                tall. The panel's picture column and rows follow it, so a figure that fills
+//                                                                less of the default frame leaves no empty space beside it. Absent: 20 x 12
+//                                                                (helpers) and 28 x 16 (lead), times the scale.
 //    "palette": { "A": "#112233", ... },                         single-character keys, #rrggbb values
 //    "marks":  { "star", "starLit", "drop", "dropLit", "asked", "told" },   palette letters (optional)
+//    "opusMark": false,                                          optional: false leaves off the small star on a helper running on Opus (absent: drawn)
 //    "stuck":  { "drop": [row, col], "mark": col },              where a stuck helper's marks go (optional)
 //    "helpers": [ {                                              1 to 12; each new helper takes the next one
 //        "name": "Robin", "names": ["Robin", "Ash"],             names: its agent-type names (letters and digits), at most 10
 //        "colors": { "E": "#fff" }, "blink": ["e", "K"],         optional: its own letters; the eye pair and lid
-//        "loops": { "dabble|read|type|run|think": { "frameMs": 300, "frames": [20 x 12 frame, ...] } },
+//        "loops": { "dabble|read|type|run|think": { "frameMs": 300, "frames": [helperSize frame, ...] } },
 //        "ends": { "done": frame, "failed": frame, "cheer|droop|asleep|idle|flinch|wave|noticed": [frame, ...],
 //                  "idleMove": [frame, ...] (optional) }
 //    } ],
-//    "lead": { "rest": [28 x 16 frame, ...], "rising": [...], "levels": [[...], ...],   (optional)
+//    "lead": { "rest": [leadSize frame, ...], "rising": [...], "levels": [[...], ...],   (optional)
 //              "flare": { "small": [[[row, col, letter], ...], ...], "big": [...] } },
 //    "sounds": { "quack": "done.wav", "honk": ..., "chirp": ..., "snore": ... }          files beside the theme file
 //  }
 
+import { CREATURE_WIDTH, SUPER_WIDTH } from './creatures'
 import type { DuckAction, ThemeArt, ThemeEnds, ThemeHelperArt, ThemeLeadArt, ThemeMarks } from './creatures'
 
 export const THEME_FILE = 'duckherd-theme.json'
@@ -34,8 +45,16 @@ export type SoundKind = (typeof SOUND_KINDS)[number]
 export type LoadedTheme = {
   id: string
   title: string
+  /** Pixels per 1 x pixel: 4 for art drawn at four times the size (absent is 1). */
+  scale?: number
+  /** The helpers' frame size in art pixels [width, height], when the theme sets it (absent: 20 x 12 times the scale). */
+  helperSize?: [number, number]
+  /** The lead's frame size in art pixels [width, height], when the theme sets it (absent: 28 x 16 times the scale). */
+  leadSize?: [number, number]
   palette: Record<string, string>
   marks?: ThemeMarks
+  /** False when the theme draws no star on Opus helpers (absent: drawn). */
+  opusMark?: false
   stuck?: { drop: [number, number]; mark: number }
   helpers: ThemeHelperArt[]
   /** Each helper's own names, in the order of `helpers`. */
@@ -49,6 +68,8 @@ const ACTIONS: DuckAction[] = ['dabble', 'read', 'type', 'run', 'think']
 const FRAME_SETS = ['cheer', 'droop', 'asleep', 'idle', 'flinch', 'wave', 'noticed'] as const
 const HELPER = { w: 20, h: 12 }
 const LEAD = { w: 28, h: 16 }
+// A frame is a whole number of cells, a cell 2 x 4 pixels at scale 1: at most this many cells wide and rows tall.
+const MAX_CELLS = { w: 40, h: 8 }
 const MAX_TEXT = 3_000_000
 const MAX_ERRORS = 8
 const HEX = /^#[0-9a-fA-F]{6}$/
@@ -74,6 +95,23 @@ export function parseTheme(text: string): { theme: LoadedTheme } | { errors: str
   if (raw.duckherdTheme !== 1) bad('"duckherdTheme": 1 is missing')
   const id = typeof raw.id === 'string' ? raw.id : ''
   if (!/^[a-z0-9][a-z0-9-]{0,30}$/.test(id) || id === 'ducks') bad('"id" must be lowercase letters, digits and dashes, and not "ducks"')
+  const scale = raw.scale === undefined ? 1 : raw.scale
+  if (scale !== 1 && scale !== 4) bad('"scale" must be 1 or 4')
+  const px = scale === 4 ? 4 : 1
+  // A frame size setting: [width, height] in art pixels, whole cells (2 x 4 pixels, times the scale); or the default.
+  const sizeOf = (key: 'helperSize' | 'leadSize', dflt: { w: number; h: number }): { w: number; h: number; set: boolean } => {
+    const v = raw[key]
+    if (v === undefined) return { w: dflt.w * px, h: dflt.h * px, set: false }
+    const [w, h] = Array.isArray(v) && v.length === 2 ? v : []
+    const cellW = 2 * px
+    const cellH = 4 * px
+    if (Number.isInteger(w) && Number.isInteger(h) && w > 0 && h > 0 && w % cellW === 0 && h % cellH === 0 && w / cellW <= MAX_CELLS.w && h / cellH <= MAX_CELLS.h) return { w, h, set: true }
+    bad(`"${key}" is [width, height] in pixels: whole cells, a multiple of ${cellW} wide (at most ${MAX_CELLS.w * cellW}) and of ${cellH} tall (at most ${MAX_CELLS.h * cellH}) at scale ${px}`)
+
+    return { w: dflt.w * px, h: dflt.h * px, set: false }
+  }
+  const HELPER_SIZE = sizeOf('helperSize', HELPER)
+  const LEAD_SIZE = sizeOf('leadSize', LEAD)
   const palette: Record<string, string> = {}
   if (!isObj(raw.palette)) bad('"palette" is missing')
   else {
@@ -124,11 +162,13 @@ export function parseTheme(text: string): { theme: LoadedTheme } | { errors: str
     if (keys.every(k => typeof m[k] === 'string' && baseKnown.has(m[k] as string))) marks = m as unknown as ThemeMarks
     else bad('"marks" needs star, starLit, drop, dropLit, asked and told, each a palette letter')
   }
+  if (raw.opusMark !== undefined && typeof raw.opusMark !== 'boolean') bad('"opusMark" must be true or false')
   let stuck: LoadedTheme['stuck']
   if (raw.stuck !== undefined) {
     const s = isObj(raw.stuck) ? raw.stuck : {}
     const d = s.drop
-    if (Array.isArray(d) && d.length === 2 && d.every(n => Number.isInteger(n) && n >= 0 && n < 12) && Number.isInteger(s.mark) && (s.mark as number) >= 0 && (s.mark as number) < 20) {
+    // In the 1 x grid, inside the helper frame.
+    if (Array.isArray(d) && d.length === 2 && d.every(n => Number.isInteger(n) && n >= 0) && (d[0] as number) < HELPER_SIZE.h / px && (d[1] as number) < HELPER_SIZE.w / px && Number.isInteger(s.mark) && (s.mark as number) >= 0 && (s.mark as number) < HELPER_SIZE.w / px) {
       stuck = { drop: [d[0] as number, d[1] as number], mark: s.mark as number }
     } else bad('"stuck" is {"drop": [row, col], "mark": col}')
   }
@@ -168,21 +208,21 @@ export function parseTheme(text: string): { theme: LoadedTheme } | { errors: str
           bad(`${at}.loops.${a}: {"frameMs": 50 to 5000, "frames": [...]}`)
           continue
         }
-        const f = frames(l.frames, HELPER, `${at}.loops.${a}`, known)
+        const f = frames(l.frames, HELPER_SIZE, `${at}.loops.${a}`, known)
         if (f !== undefined) loops[a] = { frameMs: l.frameMs, frames: f }
       }
       const en = isObj(h.ends) ? h.ends : {}
       const ends: Partial<ThemeEnds> = {}
-      const done = frame(en.done, HELPER, `${at}.ends.done`, known)
-      const failed = frame(en.failed, HELPER, `${at}.ends.failed`, known)
+      const done = frame(en.done, HELPER_SIZE, `${at}.ends.done`, known)
+      const failed = frame(en.failed, HELPER_SIZE, `${at}.ends.failed`, known)
       if (done !== undefined) ends.done = done
       if (failed !== undefined) ends.failed = failed
       for (const k of FRAME_SETS) {
-        const f = frames(en[k], HELPER, `${at}.ends.${k}`, known)
+        const f = frames(en[k], HELPER_SIZE, `${at}.ends.${k}`, known)
         if (f !== undefined) ends[k] = f
       }
       if (en.idleMove !== undefined) {
-        const f = frames(en.idleMove, HELPER, `${at}.ends.idleMove`, known)
+        const f = frames(en.idleMove, HELPER_SIZE, `${at}.ends.idleMove`, known)
         if (f !== undefined) ends.idleMove = f
       }
       const list = Array.isArray(h.names) ? h.names : [name]
@@ -205,9 +245,9 @@ export function parseTheme(text: string): { theme: LoadedTheme } | { errors: str
   let lead: ThemeLeadArt | undefined
   if (raw.lead !== undefined) {
     const l = isObj(raw.lead) ? raw.lead : {}
-    const rest = frames(l.rest, LEAD, 'lead.rest', baseKnown)
-    const rising = frames(l.rising, LEAD, 'lead.rising', baseKnown)
-    const levels = Array.isArray(l.levels) && l.levels.length >= 1 && l.levels.length <= 4 ? l.levels.map((set, i) => frames(set, LEAD, `lead.levels[${i}]`, baseKnown)) : (bad('lead.levels: 1 to 4 sets of frames'), undefined)
+    const rest = frames(l.rest, LEAD_SIZE, 'lead.rest', baseKnown)
+    const rising = frames(l.rising, LEAD_SIZE, 'lead.rising', baseKnown)
+    const levels = Array.isArray(l.levels) && l.levels.length >= 1 && l.levels.length <= 4 ? l.levels.map((set, i) => frames(set, LEAD_SIZE, `lead.levels[${i}]`, baseKnown)) : (bad('lead.levels: 1 to 4 sets of frames'), undefined)
     let flare: ThemeLeadArt['flare']
     if (l.flare !== undefined) {
       const cells = (v: unknown) =>
@@ -233,21 +273,31 @@ export function parseTheme(text: string): { theme: LoadedTheme } | { errors: str
   if (errors.length > 0) return { errors }
   const title = typeof raw.title === 'string' && raw.title.trim() !== '' ? raw.title.trim().slice(0, 60) : id
 
-  return { theme: { id, title, palette, ...(marks !== undefined ? { marks } : {}), ...(stuck !== undefined ? { stuck } : {}), helpers, names, ...(lead !== undefined ? { lead } : {}), sounds } }
+  return { theme: { id, title, ...(px !== 1 ? { scale: px } : {}), ...(HELPER_SIZE.set ? { helperSize: [HELPER_SIZE.w, HELPER_SIZE.h] as [number, number] } : {}), ...(LEAD_SIZE.set ? { leadSize: [LEAD_SIZE.w, LEAD_SIZE.h] as [number, number] } : {}), palette, ...(marks !== undefined ? { marks } : {}), ...(raw.opusMark === false ? { opusMark: false as const } : {}), ...(stuck !== undefined ? { stuck } : {}), helpers, names, ...(lead !== undefined ? { lead } : {}), sounds } }
 }
 
 /** The art for the helper at `index` (wrapping round the theme's helpers): the one set a duck view needs. */
 export function helperArt(theme: LoadedTheme, index: number): ThemeArt {
   const helper = theme.helpers[((index % theme.helpers.length) + theme.helpers.length) % theme.helpers.length]
 
-  return { id: theme.id, palette: theme.palette, ...(theme.marks !== undefined ? { marks: theme.marks } : {}), ...(theme.stuck !== undefined ? { stuck: theme.stuck } : {}), ...(helper !== undefined ? { helper } : {}) }
+  return { id: theme.id, ...(theme.scale !== undefined ? { scale: theme.scale } : {}), palette: theme.palette, ...(theme.marks !== undefined ? { marks: theme.marks } : {}), ...(theme.opusMark === false ? { opusMark: false as const } : {}), ...(theme.stuck !== undefined ? { stuck: theme.stuck } : {}), ...(helper !== undefined ? { helper } : {}) }
 }
 
 /** The art for the lead (the super duck's place): the theme's lead, or undefined to keep the ducks' own. */
 export function leadArt(theme: LoadedTheme): ThemeArt | undefined {
   if (theme.lead === undefined) return undefined
 
-  return { id: theme.id, palette: theme.palette, ...(theme.marks !== undefined ? { marks: theme.marks } : {}), lead: theme.lead }
+  return { id: theme.id, ...(theme.scale !== undefined ? { scale: theme.scale } : {}), palette: theme.palette, ...(theme.marks !== undefined ? { marks: theme.marks } : {}), lead: theme.lead }
+}
+
+/** How many cells wide a helper's picture is under this theme (none: the ducks'). */
+export function helperColumns(theme: LoadedTheme | undefined): number {
+  return theme?.helperSize !== undefined ? theme.helperSize[0] / (2 * (theme.scale ?? 1)) : CREATURE_WIDTH
+}
+
+/** How many cells wide the lead's picture is under this theme (none, or no lead art: the super duck's). */
+export function leadColumns(theme: LoadedTheme | undefined): number {
+  return theme?.lead !== undefined && theme.leadSize !== undefined ? theme.leadSize[0] / (2 * (theme.scale ?? 1)) : SUPER_WIDTH
 }
 
 /** Which helper (by place) owns a name; -1 when none does. */
