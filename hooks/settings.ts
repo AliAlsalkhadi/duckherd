@@ -8,6 +8,8 @@ import { asChatEffort } from './effort'
 import { asKeepWarmMode } from './cache'
 
 export type Settings = {
+  /** Whether the lead duck is on when a session starts. Off: plain Claude until /duckherd on, for that session. */
+  startOn: boolean
   /** Quick looks (Read, Grep, Bash ...) the lead duck gets per request before it must hand work to a helper. */
   quickLooks: number
   /** The 5-hour usage window's percent at which the throttle tightens. */
@@ -31,6 +33,7 @@ export type Settings = {
 }
 
 export const DEFAULTS: Settings = {
+  startOn: true,
   quickLooks: 3,
   throttleFiveHour: 80,
   throttleWeekMargin: 10,
@@ -67,6 +70,7 @@ export function readSettings(options: Raw): Settings {
   const theme = text(options.theme)
 
   return {
+    startOn: flag(options.startOn, DEFAULTS.startOn),
     quickLooks: whole(options.quickLooks, DEFAULTS.quickLooks, 0, 20),
     throttleFiveHour: whole(options.throttleFiveHour, DEFAULTS.throttleFiveHour, 1, 100),
     throttleWeekMargin: whole(options.throttleWeekMargin, DEFAULTS.throttleWeekMargin, 0, 100),

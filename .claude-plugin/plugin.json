@@ -1,6 +1,6 @@
 {
   "name": "duckherd",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "A lead agent that plans and judges, and helper agents that do the work, shown as ducks.",
   "author": {
     "name": "Ali Alsalkhadi"
@@ -10,6 +10,12 @@
   "homepage": "https://github.com/AliAlsalkhadi/duckherd",
   "types": "./types/index.d.ts",
   "userConfig": {
+    "startOn": {
+      "type": "boolean",
+      "title": "Start on",
+      "description": "Whether Duckherd's lead duck is on when a session starts. Off: sessions start as plain Claude; /duckherd on turns it on for that session.",
+      "default": true
+    },
     "lessonsFile": {
       "type": "string",
       "title": "Lessons file",

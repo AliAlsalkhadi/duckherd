@@ -592,7 +592,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
       const noteMs = a.told !== undefined ? at - a.told.at : undefined
       const scene: DuckScene = {
         at,
-        bird: /haiku/i.test(a.model ?? '') ? 'duckling' : 'duck',
+        bird: /haiku/i.test(a.model ?? '') ? 'duckling' : /opus/i.test(a.model ?? '') ? 'drake' : 'duck',
         action: lastStep !== undefined ? actionOfStep(lastStep.tool, lastStep.text) : actionOfKind(helperKind(`${a.description} ${a.why ?? ''}`)),
         seed: a.id,
         color: a.color,

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.10 - 2026-10-27
+
+- New setting `startOn` (default on): off, sessions start as plain Claude. `/duckherd on` and `/duckherd off` turn the lead duck on or off for the current session, and the choice is kept when you resume it. Off means no lead instructions, quick-look limit, tool rules, notes, panel or wake-ups.
+- The README now says how to update Duckherd, and which small model calls it makes by default and which can be turned off. SECURITY.md says the same.
+- Where a setup skips plugin prompt hooks, the lead duck's instructions still reach it with your prompt.
+- The ducks in the panel are drawn finer, on a grid twice as fine and smoothed, lit and shaded, with the face (eyes, bill, blush) unchanged. This applies to the built-in ducks where the terminal shows pictures; themes are unaffected.
+- Opus helpers get their own duck: a gold crown set with jewels in the helper's colour, a plume flowing back from it, a collar in that colour and a fuller chest. Sonnet helpers stay ducks and Haiku helpers ducklings.
+
 ## 0.4.9 - 2026-10-27
 
 - Leaner: Duckherd adds much less to each request. The lead duck's instructions are about 590 tokens (from about 1,230), a helper's about 120 (from 220), and the helper-name agent types (8, or 16 with a theme) no longer show in the agent listing the lead duck and helpers read. Helpers no longer carry the plan, handoff and lesson tools, and the Agent tool no longer carries the Why-line rule.

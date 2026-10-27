@@ -1352,6 +1352,54 @@ test('the lead duck plans and judges: edits go to helpers, and it gets a few qui
   expect((await $.tool.call({ tool: 'Read', file_path: 'k.go' } as never)).deny).toContain('quick looks')
 })
 
+// What the lead duck's prompt.submit hands on as context for one composer prompt.
+function leadContext(on: On, messages: unknown[]) {
+  mock.clock(on, { now: 1000 })
+  mock.store(on)
+  surface(on)
+  on('session.messages', () => ({ value: messages }) as never)
+  on('tool.call', () => ({ result: 'ok' }) as never)
+  const got: string[][] = []
+  on('prompt.submit', (_, e) => {
+    got.push([...((e as unknown as { context?: string[] }).context ?? [])])
+
+    return { text: e.text } as never
+  })
+
+  return got
+}
+
+test('lead fallback: when prompt.compose did not run, the lead section goes with the prompt, once', async ($, on) => {
+  const got = leadContext(on, [])
+  await $.command.run({ command: 'duckherd', args: '' } as never)
+  await $.prompt.submit({ text: 'Fix the bug', origin: { kind: 'composer' } } as never)
+  expect(got.at(-1)?.some(c => c.includes('# Duckherd mode'))).toBe(true)
+})
+
+test('lead fallback: nothing is added when the conversation already carries the section', async ($, on) => {
+  const section = leadSection('auto', 3)
+  const got = leadContext(on, [{ role: 'user', content: section }])
+  await $.command.run({ command: 'duckherd', args: '' } as never)
+  await $.prompt.submit({ text: 'Fix the bug', origin: { kind: 'composer' } } as never)
+  expect(got.at(-1)?.some(c => c.includes('# Duckherd mode'))).toBe(false)
+})
+
+test('lead fallback: nothing is added when prompt.compose ran', async ($, on) => {
+  const got = leadContext(on, [])
+  on('prompt.compose', () => ({ sections: [] }) as never)
+  await $.command.run({ command: 'duckherd', args: '' } as never)
+  await $.prompt.compose({ promptModel: 'claude-sonnet-4-5', outputStyle: null, tools: [], traits: [], surfaces: [] } as never)
+  await $.prompt.submit({ text: 'Fix the bug', origin: { kind: 'composer' } } as never)
+  expect(got.at(-1)?.some(c => c.includes('# Duckherd mode'))).toBe(false)
+})
+
+test('lead fallback: nothing is added when Duckherd is switched off', async ($, on) => {
+  const got = leadContext(on, [])
+  mock.env(on, { HOME: '/home/dev', PWD: '/w', CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' })
+  await $.prompt.submit({ text: 'Fix the bug', origin: { kind: 'composer' } } as never)
+  expect(got.at(-1)?.some(c => c.includes('# Duckherd mode')) ?? false).toBe(false)
+})
+
 // The session the notes tests run as: its home, its project and its id, which name its own notes.
 function notesSession(on: On) {
   mock.env(on, { HOME: '/Users/a', PWD: '/Users/a/proj' })
@@ -5581,9 +5629,9 @@ test('Update now for a folder loaded with --plugin-dir, outside cmux, copies the
 
 test('settings: every key has the current value as its default; a wrong kind or out-of-range value falls back to it', () => {
   expect(readSettings({})).toEqual(DEFAULTS)
-  expect(DEFAULTS).toEqual({ quickLooks: 3, throttleFiveHour: 80, throttleWeekMargin: 10, keepWarm: 'auto', chatEffort: 'auto', cmuxPath: '', sounds: true, themesDir: '', theme: 'ducks', statusFiles: false })
+  expect(DEFAULTS).toEqual({ startOn: true, quickLooks: 3, throttleFiveHour: 80, throttleWeekMargin: 10, keepWarm: 'auto', chatEffort: 'auto', cmuxPath: '', sounds: true, themesDir: '', theme: 'ducks', statusFiles: false })
   expect(readSettings({ quickLooks: 5, throttleFiveHour: 70, throttleWeekMargin: 5, keepWarm: 'off', chatEffort: 'high', cmuxPath: ' /opt/cmux ', sounds: false, themesDir: '~/themes', theme: 'Pond', statusFiles: true })).toEqual({
-    quickLooks: 5, throttleFiveHour: 70, throttleWeekMargin: 5, keepWarm: 'off', chatEffort: 'high', cmuxPath: '/opt/cmux', sounds: false, themesDir: '~/themes', theme: 'pond', statusFiles: true,
+    startOn: true, quickLooks: 5, throttleFiveHour: 70, throttleWeekMargin: 5, keepWarm: 'off', chatEffort: 'high', cmuxPath: '/opt/cmux', sounds: false, themesDir: '~/themes', theme: 'pond', statusFiles: true,
   })
   // Values that arrive as text (an environment-style config) are read too.
   expect(readSettings({ quickLooks: '2', sounds: 'off', throttleFiveHour: '95' })).toMatchObject({ quickLooks: 2, sounds: false, throttleFiveHour: 95 })
@@ -6349,10 +6397,21 @@ test('themes: with none found only the ducks are here, and /crew theme says so',
 // ---------------------------------------------------------------- the Claude desktop app: Duckherd stays off
 
 // Counts what Duckherd registers or draws, and what a session sees from its prompt and its tools.
-function watched(on: On, env: Record<string, string>, surfaces?: string[]) {
+function watched(on: On, env: Record<string, string>, surfaces?: string[], store?: Record<string, unknown>) {
   const seen = { registered: [] as string[], opened: [] as string[], toasts: [] as string[], runs: [] as string[][] }
   mock.clock(on, { now: 1000 })
-  mock.store(on)
+  if (store === undefined) mock.store(on)
+  else {
+    on('store.get', (_, e) => ({ value: store[(e as unknown as { key: string }).key] }) as never)
+    on('store.set', (_, e) => {
+      const { key, value } = e as unknown as { key: string; value: unknown }
+      store[key] = value
+
+      return { value: undefined } as never
+    })
+    on('store.delete', () => ({ value: undefined }) as never)
+    on('store.keys', () => ({ value: Object.keys(store) }) as never)
+  }
   mock.env(on, { HOME: '/home/dev', PWD: '/w', ...env })
   on('session.id', () => ({ value: 'own-session' }) as never)
   on('session.start', (_, e) => ({ cwd: (e as unknown as { cwd: string }).cwd }) as never)
@@ -6422,6 +6481,116 @@ test('in the Claude desktop app Duckherd registers nothing, opens no panel and b
   expect(seen.registered).toEqual([])
   expect(seen.opened).toEqual([])
   expect(seen.runs).toEqual([])
+})
+
+// ---------------------------------------------------------------- the startOn setting and /duckherd on|off
+
+// What a session sees as plain Claude or as Duckherd: the lead section in the system prompt and with the prompt, and the rule on its edits.
+async function leadSeen($: Parameters<TestBody>[0], on: On) {
+  on('prompt.compose', () => ({ sections: [] }) as never)
+  const got: string[][] = []
+  on('prompt.submit', (_, e) => {
+    got.push([...((e as unknown as { context?: string[] }).context ?? [])])
+
+    return { text: e.text } as never
+  })
+  on('session.messages', () => ({ value: [] }) as never)
+
+  return {
+    section: async () => JSON.stringify(await $.prompt.compose({ promptModel: 'claude-sonnet-4-5', outputStyle: null, tools: [], traits: [], surfaces: [] } as never)).includes('# Duckherd mode'),
+    context: async () => {
+      await $.prompt.submit({ text: 'Fix the bug', origin: { kind: 'composer' } } as never)
+
+      return got.at(-1)?.some(c => c.includes('# Duckherd mode')) ?? false
+    },
+    edit: async () => (await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'a', new_string: 'b' } as never)).deny,
+    looks: async () => {
+      let denied = false
+      for (let i = 0; i < 6; i++) denied = denied || (await $.tool.call({ tool: 'Read', file_path: `/w/f${i}.ts` } as never)).deny !== undefined
+
+      return denied
+    },
+  }
+}
+
+const said = async ($: Parameters<TestBody>[0], args: string) => ((await $.command.run({ command: 'duckherd', args } as never)) as unknown as { text: string }).text
+
+test('startOn off: sessions start as plain Claude, with no lead section, no rules and no panel; /duckherd on turns it on from the next prompt, /duckherd off stops it again', { options: { startOn: false } }, async ($, on) => {
+  const kept: Record<string, unknown> = {}
+  const seen = watched(on, {}, ['terminal'], kept)
+  const lead = await leadSeen($, on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true } as never)
+  // Only the /duckherd command is there, to turn it on.
+  expect(seen.registered).toEqual(['command:duckherd'])
+  expect(seen.opened).toEqual([])
+  expect(await lead.section()).toBe(false)
+  expect(await lead.context()).toBe(false)
+  expect(await lead.edit()).toBeUndefined()
+  expect(await lead.looks()).toBe(false)
+  expect(await said($, 'Ship it')).toBe('Duckherd is off for this session. /duckherd on turns it on.')
+
+  expect(await said($, 'on')).toBe('Duckherd on for this session.')
+  expect(seen.opened).toEqual(['duckherd'])
+  expect(seen.registered).toContain('tool:plan')
+  // With the prompt first (before any system prompt was composed), then in the system prompt.
+  expect(await lead.context()).toBe(true)
+  expect(await lead.section()).toBe(true)
+  expect(await lead.edit()).toContain('edits go to a helper')
+  expect(await lead.looks()).toBe(true)
+  // Kept for this session, so a resume of it starts the same way.
+  expect(kept['leadOn:own-session']).toMatchObject({ on: true })
+
+  expect(await said($, 'off')).toBe('Duckherd off for this session: plain Claude from your next message.')
+  expect(await lead.section()).toBe(false)
+  expect(await lead.edit()).toBeUndefined()
+  expect(await lead.looks()).toBe(false)
+  expect(kept['leadOn:own-session']).toMatchObject({ on: false })
+  expect(await said($, 'on')).toBe('Duckherd on for this session.')
+  expect(await lead.section()).toBe(true)
+})
+
+test('startOn default: sessions start with the lead duck on, and /duckherd off turns it off for that session', async ($, on) => {
+  const seen = watched(on, {}, ['terminal'])
+  const lead = await leadSeen($, on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true } as never)
+  expect(seen.registered).toContain('command:duckherd')
+  expect(seen.registered).toContain('tool:plan')
+  expect(seen.opened).toEqual(['duckherd'])
+  expect(await lead.section()).toBe(true)
+  expect(await lead.edit()).toContain('edits go to a helper')
+  expect(await said($, 'off')).toBe('Duckherd off for this session: plain Claude from your next message.')
+  expect(await lead.section()).toBe(false)
+  expect(await lead.context()).toBe(false)
+  expect(await lead.edit()).toBeUndefined()
+})
+
+test('a session resumed after /duckherd on keeps it on although startOn is off', { options: { startOn: false } }, async ($, on) => {
+  const seen = watched(on, {}, ['terminal'], { 'leadOn:own-session': { on: true, at: 1000 } })
+  const lead = await leadSeen($, on)
+  await $.session.start({ cwd: '/w', surface: 'terminal', isInteractive: true } as never)
+  expect(seen.opened).toEqual(['duckherd'])
+  expect(await lead.section()).toBe(true)
+})
+
+test('startOn off or on, the Claude desktop app stays off: /duckherd on turns nothing on', { options: { startOn: true } }, async ($, on) => {
+  const seen = watched(on, { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' }, ['desktop'])
+  const lead = await leadSeen($, on)
+  await $.session.start({ cwd: '/w', surface: 'desktop', isInteractive: true } as never)
+  await expect($.command.run({ command: 'duckherd', args: 'on' } as never)).rejects.toThrow()
+  expect(seen.registered).toEqual([])
+  expect(seen.opened).toEqual([])
+  expect(await lead.section()).toBe(false)
+  expect(await lead.context()).toBe(false)
+  expect(await lead.edit()).toBeUndefined()
+  expect(await lead.looks()).toBe(false)
+})
+
+test('settings: startOn reads a boolean or its words and falls back to on', () => {
+  expect(DEFAULTS.startOn).toBe(true)
+  expect(readSettings({}).startOn).toBe(true)
+  expect(readSettings({ startOn: false }).startOn).toBe(false)
+  expect(readSettings({ startOn: 'off' }).startOn).toBe(false)
+  expect(readSettings({ startOn: 'maybe' }).startOn).toBe(true)
 })
 
 // ---------------------------------------------------------------- toasts, compaction, helper reports

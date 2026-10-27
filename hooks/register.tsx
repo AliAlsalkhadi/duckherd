@@ -3110,7 +3110,7 @@ const HIDDEN_PACE_MS = 5000
 function pacedEvery($: $, ms: number, fn: () => Promise<void> | void) {
   const go = async () => {
     try {
-      await fn()
+      if (!(await switchedOff($))) await fn()
     } catch {
       // The next beat tries again.
     }
@@ -3458,6 +3458,12 @@ async function pruneCacheKeys($: $, now: number) {
       if (now - last > TASKS_KEPT_MS) await $.store.delete(key).catch(() => undefined)
       continue
     }
+    // Other sessions' /duckherd on|off choice, two weeks after it was made.
+    if (key.startsWith(LEAD_KEY)) {
+      const saved = await $.store.get(key).catch(() => undefined)
+      if (now - (Number((saved as { at?: unknown } | undefined)?.at) || 0) > TASKS_KEPT_MS) await $.store.delete(key).catch(() => undefined)
+      continue
+    }
     if (!CACHE_KEY.test(key)) continue
     const at = Number(await $.store.get(key).catch(() => undefined))
     if (!Number.isFinite(at) || now - at > CACHE_KEY_DAYS_MS) await $.store.delete(key).catch(() => undefined)
@@ -3544,8 +3550,7 @@ async function judgeEffort($: $, text: string, previous: string): Promise<{ effo
 }
 
 // A prompt from the person: pick the main chat's effort for its reply before the turn starts.
-// Where a plugin seated above every installed one passes their prompt.compose hooks over by design (Claude Code's
-// built-in cc-plugin-sec-default, outermost for Team and Enterprise organizations), the lead section goes with the
+// Some setups skip plugin prompt.compose hooks; fall back to prompt.submit. The lead section then goes with the
 // person's prompt instead: once, and again when compaction or a change to it leaves it out of what the model reads.
 // Nothing when the conversation can't be read, so it is never sent twice.
 async function leadFallback($: $): Promise<string | undefined> {
@@ -3993,8 +3998,47 @@ async function standsDown($: $): Promise<boolean> {
 
 let standDown: Promise<boolean> | undefined
 
-function switchedOff($: $): Promise<boolean> {
+function onDesktop($: $): Promise<boolean> {
   return (standDown ??= standsDown($).catch(() => false))
+}
+
+// Duckherd off for this session: the startOn setting, or the person's /duckherd on|off (kept per session in the store, so a
+// resume of the same session keeps it). Off or on the desktop, every hook below passes straight to `next`: plain Claude.
+let leadOff = false
+// Whether this session's start-up (tools, names, panel, timers) has run; a session that starts off runs it at /duckherd on.
+let startedUp = false
+let startedIn = ''
+const LEAD_KEY = 'leadOn:'
+
+async function switchedOff($: $): Promise<boolean> {
+  return leadOff || (await onDesktop($))
+}
+
+// `/duckherd on|off`: for this session only. Turning it off closes the panel; the hooks pass through from the next prompt.
+async function setLead($: $, turnOn: boolean): Promise<string> {
+  leadOff = !turnOn
+  const id = await $.session.id().catch(() => '')
+  if (id !== '') await $.store.set(`${LEAD_KEY}${id}`, { on: turnOn, at: await $.clock.now() }).catch(() => undefined)
+  if (turnOn) {
+    if (startedUp) await openPane($).catch(() => undefined)
+    else await startUp($, startedIn)
+    $.ui.invalidate('ui.render')
+
+    return 'Duckherd on for this session.'
+  }
+  leadSince = undefined
+  leadNow = undefined
+  leadRequest = undefined
+  await $.ui.close({ id: PANE }).catch(() => undefined)
+
+  return 'Duckherd off for this session: plain Claude from your next message.'
+}
+
+// A timer that does nothing while Duckherd is off.
+function tickWhileOn($: $, ms: number, fn: () => unknown) {
+  void $.clock.every(ms, async () => {
+    if (!(await switchedOff($))) await fn()
+  })
 }
 
 // ---------------------------------------------------------------- the band's status line
@@ -4269,6 +4313,295 @@ function panelCore($: $): PanelCore & { taskTotals: () => Promise<TaskTotal[]>; 
   }
 }
 
+// Start-up (everything but the /duckherd command): run at session start, or at /duckherd on for a session that started off.
+async function startUp($: $, cwdAtStart: string) {
+  startedUp = true
+  startedIn = cwdAtStart
+  cwd = (await $.env.get('PWD')) ?? ''
+  home = (await $.env.get('HOME')) ?? ''
+  tempDir = (await $.env.get('TMPDIR')) ?? ''
+  for (const a of await read($, agents)) {
+    if (a.status === 'running') {
+      tracked.add(a.id)
+      if (a.kind === 'helper') runningHelpers.add(a.id)
+      if (NAMES.includes(a.letter)) namesInUse.set(a.id, a.letter)
+    } else if (NAMES.includes(a.letter) && a.endedAt !== undefined) {
+      namesFreed.set(a.letter, Math.max(namesFreed.get(a.letter) ?? 0, a.endedAt))
+    }
+  }
+  ownSessionId = await $.session.id()
+  pluginRoot = $.plugin.root
+  // A session resumed after a restart: its tasks' figures and helpers' briefs back from the store.
+  if (Object.keys(await read($, taskSpend)).length === 0) {
+    const saved = await $.store.get(`${TASKS_KEY}${ownSessionId}`).catch(() => undefined)
+    if (typeof saved === 'object' && saved !== null) await update($, taskSpend, () => saved as Record<string, TaskSpend>)
+  }
+  await loadBriefs($, ownSessionId)
+  await refreshTtl($)
+  keepWarmMode = asKeepWarmMode(await $.store.get('keepWarmMode').catch(() => undefined), settings.keepWarm)
+  keepWarmPaused = false
+  chatEffort = asChatEffort(await $.store.get('chatEffort').catch(() => undefined), settings.chatEffort)
+  await loadThrottle($)
+  effortPick = undefined
+  appEffortSeen = undefined
+  appEffortModel = undefined
+  effortByYou = false
+  lastTypedAt = Number(await $.store.get(`cacheTyped:${ownSessionId}`).catch(() => undefined)) || (await $.clock.now())
+  cacheLastTurnAt = Number(await $.store.get(`cacheLast:${ownSessionId}`).catch(() => undefined)) || undefined
+  cacheHeld = undefined
+  void pruneCacheKeys($, await $.clock.now())
+  tickWhileOn($, 30000, () => keepWarmTick($).catch(() => undefined))
+  dashboardEnded = false
+  dashboardState = undefined
+  try {
+    const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd: startedIn, timeoutMs: 10000 })
+    projectRoot = top.exitCode === 0 ? top.stdout.trim() : startedIn
+  } catch {
+    projectRoot = startedIn
+  }
+  await loadThemes($)
+  await registerNames($)
+  usableNames = new Set(registeredNames)
+  // The status file (statusFiles on only), checked every 3 s: it costs a read of the state and nothing when unchanged.
+  if (settings.statusFiles) tickWhileOn($, DASHBOARD_TICK_MS, () => writeDashboard($).catch(() => undefined))
+  // The Sessions tab and its badge stay current while the panel shows, without a Refresh press: every
+  // 20 s on the tab, every minute off it.
+  tickWhileOn($, 20000, async () => {
+    if (!(await isPaneUp($))) return
+    if ((await read($, tab)) === 'sessions' || (await $.clock.now()) - peersAt >= 60000) await refreshPeers($, true)
+  })
+  // When macOS says memory is short (its pressure level, warning or worse: swap alone stays high long
+  // after memory is freed), a note naming what to stop: the sessions not used for an hour and what they
+  // hold. At most once an hour across all Duckherd sessions, and only with something
+  // to name.
+  tickWhileOn($, 60000, async () => {
+    if ((await platformOf($)) !== 'darwin') return
+    const level = await $.process.run(['sysctl', '-n', 'kern.memorystatus_vm_pressure_level'], { timeoutMs: 5000 }).catch(() => undefined)
+    memoryLevel = Number(level?.stdout.trim() ?? '1') || 1
+    if (memoryLevel < 2) return
+    const now = await $.clock.now()
+    if (now - (Number(await $.store.get('memoryWarnedAt')) || 0) < 3600000) return
+    await $.store.set('memoryWarnedAt', now)
+    await refreshMemory($)
+    const idle = ((await read($, memory))?.sessions ?? []).filter(
+      m => m.mb > 0 && m.sessionId !== ownSessionId && !m.isWorking && !m.isWaiting && m.lastActive !== undefined && now - m.lastActive > 3600000,
+    )
+    // And what runs outside every session: simulators with nothing running in them, dev servers and
+    // test browsers nobody is connected to.
+    const left = ((await read($, memory))?.leftovers ?? []).filter(l => (l.kind === 'simulator' ? l.detail === 'no app running' : !l.isInUse))
+    if (idle.length === 0 && left.length === 0) return
+    const parts = [
+      idle.length > 0 ? `${idle.length === 1 ? 'a session' : `${idle.length} sessions`} not used for an hour (${idle.slice(0, 3).map(m => m.name).join(', ')}${idle.length > 3 ? '…' : ''})` : '',
+      left.length > 0 ? `${left.length === 1 ? left[0]?.name ?? 'a leftover' : `${left.length} leftovers (${left.slice(0, 2).map(l => l.name).join(', ')}${left.length > 2 ? '…' : ''})`}` : '',
+    ].filter(Boolean)
+    const held = sizeText([...idle, ...left].reduce((sum, x) => sum + x.mb, 0))
+    notify($, 'Your Mac is short of memory', `${parts.join(' and ')} ${idle.length + left.length === 1 ? 'holds' : 'hold'} ${held}. Stop or close them in the Sessions tab.`.replace(/^./, c => c.toUpperCase()), 'chirp')
+  })
+  // Its Memory section, while it shows.
+  tickWhileOn($, 30000, async () => {
+    if ((await read($, tab)) === 'sessions' && (await isPaneUp($))) await refreshMemory($)
+  })
+  // The Changes tab follows edits every few seconds while it shows; its badge every half minute.
+  tickWhileOn($, 4000, async () => {
+    if (!(await isPaneUp($))) return
+    const seen = (await read($, changes))?.at ?? 0
+    if ((await read($, tab)) === 'changes' || (await $.clock.now()) - seen > 30000) await refreshChanges($)
+  })
+  const pick = asChoice(await $.store.get('helperModel'))
+  if (pick !== undefined && !(await read($, started))) await update($, helperModel, () => pick)
+  const saved = await $.store.get('log')
+  if (Array.isArray(saved) && (await read($, log)).length === 0) await update($, log, () => saved as LogEntry[])
+  void loadLearning($)
+
+  await $.command.register({
+    name: 'helpers',
+    description: 'Pick the model for helpers, or let the lead duck pick per helper',
+    argumentHint: 'haiku | sonnet | opus | auto',
+  })
+  await $.command.register({ name: 'learn', description: 'Explain what we just did and save it to your learning log' })
+  await $.command.register({ name: 'tell', description: 'Send a message to a running helper', argumentHint: '<name> <message>' })
+  await $.command.register({ name: 'helper-stop', description: 'Stop a running helper by name', argumentHint: '<name>' }).catch(() => undefined)
+  await $.command.register({ name: 'crew', description: 'The ducks: sounds on, quiet or off; calm or lively; pictures or text', argumentHint: 'on | quiet | off | calm | lively | pictures | text | theme <name>' }).catch(() => undefined)
+  await $.command.register({ name: 'keep-warm', description: 'Ping the session just before its prompt cache goes cold (auto: only during a big unfinished plan)', argumentHint: 'on | off | auto' }).catch(() => undefined)
+  await $.command.register({ name: 'handoff', description: 'Haiku writes HANDOFF.md so a fresh chat can carry on this work' }).catch(() => undefined)
+  await $.command.register({ name: 'chat-effort', description: "The lead duck's own effort: auto judges each prompt, off leaves it, or pin a level", argumentHint: CHAT_EFFORT_CHOICES.join(' | ') }).catch(() => undefined)
+  await $.command.register({ name: 'throttle', description: 'Usage throttle: show it, or set on, off or boost (off until the current windows reset)', argumentHint: 'on | off | boost' }).catch(() => undefined)
+  const savedNotify = await $.store.get('notifyOn')
+  if (typeof savedNotify === 'boolean') await update($, notifyOn, () => savedNotify)
+  const savedQuack = await $.store.get('quackOn')
+  await update($, quackOn, () => (typeof savedQuack === 'boolean' ? savedQuack : settings.sounds))
+  const savedGain = await $.store.get('quackGain')
+  if (typeof savedGain === 'number') await update($, quackGain, () => savedGain)
+  const savedCalm = await $.store.get('ducksCalm')
+  if (typeof savedCalm === 'boolean') await update($, ducksCalm, () => savedCalm)
+  const savedText = await $.store.get('ducksText')
+  if (typeof savedText === 'boolean') await update($, ducksText, () => savedText)
+  // Kept false only by `/crew pictures`: the person's pick over the automatic text ducks.
+  picturesPicked = savedText === false
+
+  await $.tool.register({
+    name: 'plan',
+    description:
+      'Show the plan in the person\'s panel. Call it to plan a task and when the plan changes; the mod marks helper steps doing and done itself.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'The task in a few plain words' },
+        steps: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'The step in plain words' },
+              who: { type: 'string', description: '"helper", "lead duck", "you" (waiting on the person) or "handoff:<session name>"' },
+              state: { type: 'string', enum: ['todo', 'doing', 'done'] },
+              note: { type: 'string', description: 'Optional, one short line: what this step found' },
+            },
+            required: ['text', 'who', 'state'],
+          },
+        },
+      },
+      required: ['steps'],
+    },
+  })
+  await $.tool.register({
+    name: 'handoff',
+    description:
+      'Write a ready-to-paste prompt for another of the person\'s sessions (a branch that session owns). It is saved as a draft in the Sessions tab; the person reads it and sends it. Never send it yourself.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session: { type: 'string', description: 'The session\'s name as ListAgents shows it' },
+        prompt: { type: 'string', description: 'The whole prompt for that session' },
+        why: { type: 'string', description: 'One line: why this work belongs to that session' },
+      },
+      required: ['session', 'prompt'],
+    },
+  })
+  await $.tool.register({
+    name: 'lesson',
+    description:
+      'Save a plain-English explanation of what we did, and 1 or 2 lessons, to the person\'s learning log. Only when the person asks (/learn).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        what: { type: 'string', description: 'What we did, in 2 to 4 short plain sentences' },
+        lessons: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              idea: { type: 'string', description: 'The system-design idea, named in a few words' },
+              text: { type: 'string', description: 'One plain line on why it mattered here' },
+              topic: { type: 'string', enum: [...TOPICS], description: 'The theme it belongs to' },
+            },
+            required: ['idea', 'text'],
+          },
+        },
+        from: { type: 'string', description: 'Where it came from, in a few words (e.g. "task: client filter")' },
+      },
+      required: ['what', 'lessons'],
+    },
+  })
+
+  tickWhileOn($, 5000, async () => {
+    // Those waiting on background work: done once Claude Code says so.
+    for (const a of await read($, agents)) {
+      if (a.background !== undefined && tracked.has(a.id) && (await agentState($, a.id)) === 'ended') await finishHelper($, a.id)
+    }
+  })
+  // Ducks move on their own (duck-view.tsx). The panel redraws only when what it shows changes: a duck
+  // that starts or stops (a helper running, or just finished and reacting), the lead duck starting or
+  // resting, the person leaving or coming back to cmux (the ducks stand still meanwhile), and while
+  // something works on the tab shown, every 5 s for its clocks; at rest, once a minute, so the usage
+  // card's shares and reset times keep up. Checked each second, which costs nothing when nothing changed.
+  let drawnFor = ''
+  pacedEvery($, 1000, async () => {
+    const now = await $.clock.now()
+    const withDuck = (await read($, agents))
+      .filter(a => a.status === 'running' || (a.endedAt !== undefined && now - a.endedAt < REACT_MS))
+      .map(a => a.id)
+      .join(',')
+    const isFinishing = planDoneAt !== undefined && now - planDoneAt < FINISH_MS
+    const isBusy = withDuck !== '' || leadSince !== undefined || isFinishing
+    if (!(await isPaneUp($))) return
+    const isWatching = await isWatched($)
+    const shown = await read($, tab)
+    const ticks = isBusy && isWatching && shown === 'agents' ? Math.floor(now / 5000) : ''
+    const showing = isBusy ? `${withDuck}|${leadSince !== undefined}|${isFinishing}|${isWatching}|${ticks}` : `idle|${Math.floor(now / 60000)}`
+    if (showing !== drawnFor) {
+      drawnFor = showing
+      $.ui.invalidate('ui.render')
+    }
+  })
+  // The ducks drawn as pictures move a beat at a time, each swapped in place for its next picture
+  // when that differs; they stand still while the person is in another app.
+  pacedEvery($, CREATURE_TICK_MS, async () => {
+    if (pictured.size === 0 || !watching.value || !watching.shown) return
+    const now = await $.clock.now()
+    for (const key of [...pictured.keys()]) {
+      // The latest the panel drew for it, read afresh: one drawn while an earlier swap was on its way
+      // isn't swapped back to what it showed before.
+      const p = pictured.get(key)
+      if (p === undefined) continue
+      const png = pictureOf(duckViewDrawing(p.view, now, now - p.view.stamp))
+      if (png === p.shown) continue
+      p.shown = png
+      const done = await $.ui.blit({ requestId: PANE, key, source: { png } }).catch((err: unknown) => ({ deny: message(err) }))
+      if (done.deny === undefined) continue
+      if (pictured.get(key) === p) pictured.delete(key)
+      // Only a terminal that draws the words in place of pictures turns the ducks to text, on its own
+      // and said once; not when the person picked pictures.
+      if (/\balt\b/i.test(done.deny) && !picturesPicked) {
+        picturesFail = true
+        if (!textToldOnce) {
+          textToldOnce = true
+          toast($, "This terminal doesn't show pictures, so the ducks are drawn as text. /crew pictures to keep pictures anyway.")
+        }
+        $.ui.invalidate('ui.render')
+      }
+    }
+  })
+  // A helper stuck: checked every 15 s. Its duck dozing off after 3 quiet minutes says
+  // nothing on its own; a long build is quiet too.
+  tickWhileOn($, 15000, () => checkOnHelpers($))
+  // A newer Duckherd on disk, the usage limit and clashes over files, checked as it goes;
+  // and the last unfinished task here, to pick up.
+  void checkNewer($)
+  void readUsage($)
+  void loadResumable($)
+  tickWhileOn($, 60000, async () => {
+    await checkNewer($)
+    await readUsage($)
+  })
+  tickWhileOn($, 20000, () => (editing.size > 0 || clashes.length > 0 ? shareEditing($) : undefined))
+  // Leftovers of lead ducks that are gone, swept soon after starting and every 5 minutes.
+  void $.clock.after(30000, async () => ((await switchedOff($)) ? undefined : sweepLeftovers($)))
+  tickWhileOn($, SWEEP_MS, () => sweepLeftovers($))
+  // The panel's clock of how long the lead duck has been going, and the band's usage and git, move on every half minute.
+  tickWhileOn($, 30000, () => $.ui.invalidate('ui.render'))
+  // The band sits in the panel's Agents tab while the panel is the pane shown: when another pane takes its
+  // place (or it comes back), the band moves back above the prompt, within 2 s.
+  tickWhileOn($, 2000, async () => {
+    if (!bandInPane && paneShownLast !== true) return
+    const shown = await isPaneShown($)
+    if (shown === paneShownLast) return
+    paneShownLast = shown
+    $.ui.invalidate('ui.render')
+  })
+
+  // The first time ever, a welcome; outside cmux, one hint, once ever (helpers' tabs and well-aimed
+  // notifications need it), left for a later start when the welcome just showed, so one note shows at a time.
+  void firstRunNote($).then(shown => (shown ? undefined : cmuxHint($)))
+
+  // A session that loads Duckherd starts with the panel open. Only once per
+  // session: a reload leaves the panel as the person has it.
+  if (!(await read($, started))) {
+    await update($, started, () => true)
+    void openPane($, 'agents')
+  }
+}
+
 export const register: Register = (on, options) => {
   standDown = undefined
   bandGit = undefined
@@ -4281,6 +4614,9 @@ export const register: Register = (on, options) => {
   nudgedFor = undefined
   lessonsSetting = typeof options.lessonsFile === 'string' ? options.lessonsFile.trim() : ''
   settings = readSettings(options)
+  leadOff = !settings.startOn
+  startedUp = false
+  startedIn = ''
   quickLooks = settings.quickLooks
   throttleLimits = { fiveTight: settings.throttleFiveHour, weekMargin: settings.throttleWeekMargin }
   themes = []
@@ -4303,291 +4639,13 @@ export const register: Register = (on, options) => {
   helperOfCall.clear()
   finishing.clear()
   on('session.start', async ($, e, next) => {
-    if (await switchedOff($)) return next(e)
-    cwd = (await $.env.get('PWD')) ?? ''
-    home = (await $.env.get('HOME')) ?? ''
-    tempDir = (await $.env.get('TMPDIR')) ?? ''
-    for (const a of await read($, agents)) {
-      if (a.status === 'running') {
-        tracked.add(a.id)
-        if (a.kind === 'helper') runningHelpers.add(a.id)
-        if (NAMES.includes(a.letter)) namesInUse.set(a.id, a.letter)
-      } else if (NAMES.includes(a.letter) && a.endedAt !== undefined) {
-        namesFreed.set(a.letter, Math.max(namesFreed.get(a.letter) ?? 0, a.endedAt))
-      }
-    }
-    ownSessionId = await $.session.id()
-    pluginRoot = $.plugin.root
-    // A session resumed after a restart: its tasks' figures and helpers' briefs back from the store.
-    if (Object.keys(await read($, taskSpend)).length === 0) {
-      const saved = await $.store.get(`${TASKS_KEY}${ownSessionId}`).catch(() => undefined)
-      if (typeof saved === 'object' && saved !== null) await update($, taskSpend, () => saved as Record<string, TaskSpend>)
-    }
-    await loadBriefs($, ownSessionId)
-    await refreshTtl($)
-    keepWarmMode = asKeepWarmMode(await $.store.get('keepWarmMode').catch(() => undefined), settings.keepWarm)
-    keepWarmPaused = false
-    chatEffort = asChatEffort(await $.store.get('chatEffort').catch(() => undefined), settings.chatEffort)
-    await loadThrottle($)
-    effortPick = undefined
-    appEffortSeen = undefined
-    appEffortModel = undefined
-    effortByYou = false
-    lastTypedAt = Number(await $.store.get(`cacheTyped:${ownSessionId}`).catch(() => undefined)) || (await $.clock.now())
-    cacheLastTurnAt = Number(await $.store.get(`cacheLast:${ownSessionId}`).catch(() => undefined)) || undefined
-    cacheHeld = undefined
-    void pruneCacheKeys($, await $.clock.now())
-    void $.clock.every(30000, () => keepWarmTick($).catch(() => undefined))
-    dashboardEnded = false
-    dashboardState = undefined
-    try {
-      const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd: e.cwd, timeoutMs: 10000 })
-      projectRoot = top.exitCode === 0 ? top.stdout.trim() : e.cwd
-    } catch {
-      projectRoot = e.cwd
-    }
-    await loadThemes($)
-    await registerNames($)
-    usableNames = new Set(registeredNames)
-    // The status file (statusFiles on only), checked every 3 s: it costs a read of the state and nothing when unchanged.
-    if (settings.statusFiles) void $.clock.every(DASHBOARD_TICK_MS, () => writeDashboard($).catch(() => undefined))
-    // The Sessions tab and its badge stay current while the panel shows, without a Refresh press: every
-    // 20 s on the tab, every minute off it.
-    void $.clock.every(20000, async () => {
-      if (!(await isPaneUp($))) return
-      if ((await read($, tab)) === 'sessions' || (await $.clock.now()) - peersAt >= 60000) await refreshPeers($, true)
-    })
-    // When macOS says memory is short (its pressure level, warning or worse: swap alone stays high long
-    // after memory is freed), a note naming what to stop: the sessions not used for an hour and what they
-    // hold. At most once an hour across all Duckherd sessions, and only with something
-    // to name.
-    void $.clock.every(60000, async () => {
-      if ((await platformOf($)) !== 'darwin') return
-      const level = await $.process.run(['sysctl', '-n', 'kern.memorystatus_vm_pressure_level'], { timeoutMs: 5000 }).catch(() => undefined)
-      memoryLevel = Number(level?.stdout.trim() ?? '1') || 1
-      if (memoryLevel < 2) return
-      const now = await $.clock.now()
-      if (now - (Number(await $.store.get('memoryWarnedAt')) || 0) < 3600000) return
-      await $.store.set('memoryWarnedAt', now)
-      await refreshMemory($)
-      const idle = ((await read($, memory))?.sessions ?? []).filter(
-        m => m.mb > 0 && m.sessionId !== ownSessionId && !m.isWorking && !m.isWaiting && m.lastActive !== undefined && now - m.lastActive > 3600000,
-      )
-      // And what runs outside every session: simulators with nothing running in them, dev servers and
-      // test browsers nobody is connected to.
-      const left = ((await read($, memory))?.leftovers ?? []).filter(l => (l.kind === 'simulator' ? l.detail === 'no app running' : !l.isInUse))
-      if (idle.length === 0 && left.length === 0) return
-      const parts = [
-        idle.length > 0 ? `${idle.length === 1 ? 'a session' : `${idle.length} sessions`} not used for an hour (${idle.slice(0, 3).map(m => m.name).join(', ')}${idle.length > 3 ? '…' : ''})` : '',
-        left.length > 0 ? `${left.length === 1 ? left[0]?.name ?? 'a leftover' : `${left.length} leftovers (${left.slice(0, 2).map(l => l.name).join(', ')}${left.length > 2 ? '…' : ''})`}` : '',
-      ].filter(Boolean)
-      const held = sizeText([...idle, ...left].reduce((sum, x) => sum + x.mb, 0))
-      notify($, 'Your Mac is short of memory', `${parts.join(' and ')} ${idle.length + left.length === 1 ? 'holds' : 'hold'} ${held}. Stop or close them in the Sessions tab.`.replace(/^./, c => c.toUpperCase()), 'chirp')
-    })
-    // Its Memory section, while it shows.
-    void $.clock.every(30000, async () => {
-      if ((await read($, tab)) === 'sessions' && (await isPaneUp($))) await refreshMemory($)
-    })
-    // The Changes tab follows edits every few seconds while it shows; its badge every half minute.
-    void $.clock.every(4000, async () => {
-      if (!(await isPaneUp($))) return
-      const seen = (await read($, changes))?.at ?? 0
-      if ((await read($, tab)) === 'changes' || (await $.clock.now()) - seen > 30000) await refreshChanges($)
-    })
-    const pick = asChoice(await $.store.get('helperModel'))
-    if (pick !== undefined && !(await read($, started))) await update($, helperModel, () => pick)
-    const saved = await $.store.get('log')
-    if (Array.isArray(saved) && (await read($, log)).length === 0) await update($, log, () => saved as LogEntry[])
-    void loadLearning($)
-
-    await $.command.register({ name: 'duckherd', description: 'Duckherd mode: plan a task and run it with helpers', argumentHint: '[task] | next <task> | doctor | panel | notify on|off' })
-    await $.command.register({
-      name: 'helpers',
-      description: 'Pick the model for helpers, or let the lead duck pick per helper',
-      argumentHint: 'haiku | sonnet | opus | auto',
-    })
-    await $.command.register({ name: 'learn', description: 'Explain what we just did and save it to your learning log' })
-    await $.command.register({ name: 'tell', description: 'Send a message to a running helper', argumentHint: '<name> <message>' })
-    await $.command.register({ name: 'helper-stop', description: 'Stop a running helper by name', argumentHint: '<name>' }).catch(() => undefined)
-    await $.command.register({ name: 'crew', description: 'The ducks: sounds on, quiet or off; calm or lively; pictures or text', argumentHint: 'on | quiet | off | calm | lively | pictures | text | theme <name>' }).catch(() => undefined)
-    await $.command.register({ name: 'keep-warm', description: 'Ping the session just before its prompt cache goes cold (auto: only during a big unfinished plan)', argumentHint: 'on | off | auto' }).catch(() => undefined)
-    await $.command.register({ name: 'handoff', description: 'Haiku writes HANDOFF.md so a fresh chat can carry on this work' }).catch(() => undefined)
-    await $.command.register({ name: 'chat-effort', description: "The lead duck's own effort: auto judges each prompt, off leaves it, or pin a level", argumentHint: CHAT_EFFORT_CHOICES.join(' | ') }).catch(() => undefined)
-    await $.command.register({ name: 'throttle', description: 'Usage throttle: show it, or set on, off or boost (off until the current windows reset)', argumentHint: 'on | off | boost' }).catch(() => undefined)
-    const savedNotify = await $.store.get('notifyOn')
-    if (typeof savedNotify === 'boolean') await update($, notifyOn, () => savedNotify)
-    const savedQuack = await $.store.get('quackOn')
-    await update($, quackOn, () => (typeof savedQuack === 'boolean' ? savedQuack : settings.sounds))
-    const savedGain = await $.store.get('quackGain')
-    if (typeof savedGain === 'number') await update($, quackGain, () => savedGain)
-    const savedCalm = await $.store.get('ducksCalm')
-    if (typeof savedCalm === 'boolean') await update($, ducksCalm, () => savedCalm)
-    const savedText = await $.store.get('ducksText')
-    if (typeof savedText === 'boolean') await update($, ducksText, () => savedText)
-    // Kept false only by `/crew pictures`: the person's pick over the automatic text ducks.
-    picturesPicked = savedText === false
-
-    await $.tool.register({
-      name: 'plan',
-      description:
-        'Show the plan in the person\'s panel. Call it to plan a task and when the plan changes; the mod marks helper steps doing and done itself.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          task: { type: 'string', description: 'The task in a few plain words' },
-          steps: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                text: { type: 'string', description: 'The step in plain words' },
-                who: { type: 'string', description: '"helper", "lead duck", "you" (waiting on the person) or "handoff:<session name>"' },
-                state: { type: 'string', enum: ['todo', 'doing', 'done'] },
-                note: { type: 'string', description: 'Optional, one short line: what this step found' },
-              },
-              required: ['text', 'who', 'state'],
-            },
-          },
-        },
-        required: ['steps'],
-      },
-    })
-    await $.tool.register({
-      name: 'handoff',
-      description:
-        'Write a ready-to-paste prompt for another of the person\'s sessions (a branch that session owns). It is saved as a draft in the Sessions tab; the person reads it and sends it. Never send it yourself.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          session: { type: 'string', description: 'The session\'s name as ListAgents shows it' },
-          prompt: { type: 'string', description: 'The whole prompt for that session' },
-          why: { type: 'string', description: 'One line: why this work belongs to that session' },
-        },
-        required: ['session', 'prompt'],
-      },
-    })
-    await $.tool.register({
-      name: 'lesson',
-      description:
-        'Save a plain-English explanation of what we did, and 1 or 2 lessons, to the person\'s learning log. Only when the person asks (/learn).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          what: { type: 'string', description: 'What we did, in 2 to 4 short plain sentences' },
-          lessons: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                idea: { type: 'string', description: 'The system-design idea, named in a few words' },
-                text: { type: 'string', description: 'One plain line on why it mattered here' },
-                topic: { type: 'string', enum: [...TOPICS], description: 'The theme it belongs to' },
-              },
-              required: ['idea', 'text'],
-            },
-          },
-          from: { type: 'string', description: 'Where it came from, in a few words (e.g. "task: client filter")' },
-        },
-        required: ['what', 'lessons'],
-      },
-    })
-
-    void $.clock.every(5000, async () => {
-      // Those waiting on background work: done once Claude Code says so.
-      for (const a of await read($, agents)) {
-        if (a.background !== undefined && tracked.has(a.id) && (await agentState($, a.id)) === 'ended') await finishHelper($, a.id)
-      }
-    })
-    // Ducks move on their own (duck-view.tsx). The panel redraws only when what it shows changes: a duck
-    // that starts or stops (a helper running, or just finished and reacting), the lead duck starting or
-    // resting, the person leaving or coming back to cmux (the ducks stand still meanwhile), and while
-    // something works on the tab shown, every 5 s for its clocks; at rest, once a minute, so the usage
-    // card's shares and reset times keep up. Checked each second, which costs nothing when nothing changed.
-    let drawnFor = ''
-    pacedEvery($, 1000, async () => {
-      const now = await $.clock.now()
-      const withDuck = (await read($, agents))
-        .filter(a => a.status === 'running' || (a.endedAt !== undefined && now - a.endedAt < REACT_MS))
-        .map(a => a.id)
-        .join(',')
-      const isFinishing = planDoneAt !== undefined && now - planDoneAt < FINISH_MS
-      const isBusy = withDuck !== '' || leadSince !== undefined || isFinishing
-      if (!(await isPaneUp($))) return
-      const isWatching = await isWatched($)
-      const shown = await read($, tab)
-      const ticks = isBusy && isWatching && shown === 'agents' ? Math.floor(now / 5000) : ''
-      const showing = isBusy ? `${withDuck}|${leadSince !== undefined}|${isFinishing}|${isWatching}|${ticks}` : `idle|${Math.floor(now / 60000)}`
-      if (showing !== drawnFor) {
-        drawnFor = showing
-        $.ui.invalidate('ui.render')
-      }
-    })
-    // The ducks drawn as pictures move a beat at a time, each swapped in place for its next picture
-    // when that differs; they stand still while the person is in another app.
-    pacedEvery($, CREATURE_TICK_MS, async () => {
-      if (pictured.size === 0 || !watching.value || !watching.shown) return
-      const now = await $.clock.now()
-      for (const key of [...pictured.keys()]) {
-        // The latest the panel drew for it, read afresh: one drawn while an earlier swap was on its way
-        // isn't swapped back to what it showed before.
-        const p = pictured.get(key)
-        if (p === undefined) continue
-        const png = pictureOf(duckViewDrawing(p.view, now, now - p.view.stamp))
-        if (png === p.shown) continue
-        p.shown = png
-        const done = await $.ui.blit({ requestId: PANE, key, source: { png } }).catch((err: unknown) => ({ deny: message(err) }))
-        if (done.deny === undefined) continue
-        if (pictured.get(key) === p) pictured.delete(key)
-        // Only a terminal that draws the words in place of pictures turns the ducks to text, on its own
-        // and said once; not when the person picked pictures.
-        if (/\balt\b/i.test(done.deny) && !picturesPicked) {
-          picturesFail = true
-          if (!textToldOnce) {
-            textToldOnce = true
-            toast($, "This terminal doesn't show pictures, so the ducks are drawn as text. /crew pictures to keep pictures anyway.")
-          }
-          $.ui.invalidate('ui.render')
-        }
-      }
-    })
-    // A helper stuck: checked every 15 s. Its duck dozing off after 3 quiet minutes says
-    // nothing on its own; a long build is quiet too.
-    void $.clock.every(15000, () => checkOnHelpers($))
-    // A newer Duckherd on disk, the usage limit and clashes over files, checked as it goes;
-    // and the last unfinished task here, to pick up.
-    void checkNewer($)
-    void readUsage($)
-    void loadResumable($)
-    void $.clock.every(60000, async () => {
-      await checkNewer($)
-      await readUsage($)
-    })
-    void $.clock.every(20000, () => (editing.size > 0 || clashes.length > 0 ? shareEditing($) : undefined))
-    // Leftovers of lead ducks that are gone, swept soon after starting and every 5 minutes.
-    void $.clock.after(30000, () => sweepLeftovers($))
-    void $.clock.every(SWEEP_MS, () => sweepLeftovers($))
-    // The panel's clock of how long the lead duck has been going, and the band's usage and git, move on every half minute.
-    void $.clock.every(30000, () => $.ui.invalidate('ui.render'))
-    // The band sits in the panel's Agents tab while the panel is the pane shown: when another pane takes its
-    // place (or it comes back), the band moves back above the prompt, within 2 s.
-    void $.clock.every(2000, async () => {
-      if (!bandInPane && paneShownLast !== true) return
-      const shown = await isPaneShown($)
-      if (shown === paneShownLast) return
-      paneShownLast = shown
-      $.ui.invalidate('ui.render')
-    })
-
-    // The first time ever, a welcome; outside cmux, one hint, once ever (helpers' tabs and well-aimed
-    // notifications need it), left for a later start when the welcome just showed, so one note shows at a time.
-    void firstRunNote($).then(shown => (shown ? undefined : cmuxHint($)))
-
-    // A session that loads Duckherd starts with the panel open. Only once per
-    // session: a reload leaves the panel as the person has it.
-    if (!(await read($, started))) {
-      await update($, started, () => true)
-      void openPane($, 'agents')
-    }
+    if (await onDesktop($)) return next(e)
+    startedIn = e.cwd
+    // A choice made in this session with /duckherd on|off, kept across a resume, wins over the setting.
+    const kept = await $.store.get(`${LEAD_KEY}${await $.session.id().catch(() => '')}`).catch(() => undefined)
+    if (typeof kept === 'object' && kept !== null && typeof (kept as { on?: unknown }).on === 'boolean') leadOff = !(kept as { on: boolean }).on
+    await $.command.register({ name: 'duckherd', description: 'Duckherd mode: plan a task and run it with helpers', argumentHint: '[task] | on | off | next <task> | doctor | panel | notify on|off' })
+    if (!leadOff) await startUp($, e.cwd)
 
     return next(e)
   })
@@ -4595,8 +4653,11 @@ export const register: Register = (on, options) => {
   // ------------------------------------------------------------ commands
 
   on('command.run', { command: 'duckherd' }, async ($, e, next) => {
-    if (await switchedOff($)) return next(e)
+    if (await onDesktop($)) return next(e)
     const what = e.args.trim()
+    const turn = /^(on|off)$/i.exec(what)
+    if (turn !== null) return { text: await setLead($, (turn[1] ?? '').toLowerCase() === 'on') }
+    if (leadOff) return { text: 'Duckherd is off for this session. /duckherd on turns it on.' }
     const queued = /^next\s+(.+)$/is.exec(what)
     if (queued !== null) {
       const queuedTask = (queued[1] ?? '').trim()
@@ -5198,7 +5259,7 @@ export const register: Register = (on, options) => {
   // The lead duck closing (exit, /clear): its helpers' background work, test browser and simulators
   // stop with it, not left to run on.
   on('session.end', async ($, e, next) => {
-    if (await switchedOff($)) return next(e)
+    if ((await onDesktop($)) || (leadOff && !startedUp)) return next(e)
     await removeDashboard($).catch(() => undefined)
     await cleanUpOnClose($).catch(() => undefined)
 
@@ -5512,12 +5573,14 @@ export const register: Register = (on, options) => {
   // Lines this session's edits added and took out, the lead duck's and its helpers', from each edit's own diff.
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
     const ran = await next(e)
+    if (await switchedOff($)) return ran
     countLines($, 'Edit', ran)
 
     return ran
   })
   on('tool.call', { tool: 'Write' }, async ($, e, next) => {
     const ran = await next(e)
+    if (await switchedOff($)) return ran
     countLines($, 'Write', ran)
 
     return ran

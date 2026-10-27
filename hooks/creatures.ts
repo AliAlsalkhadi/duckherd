@@ -8,6 +8,8 @@
 // be drawn as a picture, every pixel its own colour, where the terminal shows pictures.
 // Haiku helpers are ducklings.
 
+import { finer } from './finer'
+import type { Look } from './finer'
 import { base64, pngOf } from './png'
 
 type HelperKind = 'review' | 'search' | 'code' | 'test' | 'other'
@@ -86,6 +88,8 @@ const DUCK_COLORS: Record<string, string> = {
   // Its hair: lit edge, shadow, glint; and in red.
   V: '#FFE680', M: '#D98E0A', n: '#FFFBEA', g: '#FF8A70', D: '#A8141C',
   q: '#3FA9F5', J: '#5EC8FF', I: '#2E8FE0', j: '#D2F2FF',
+  // The Opus duck's gold: body, light, shade.
+  1: '#E5A21A', 2: '#FFE58A', 3: '#7A4E08',
 }
 
 // A bird: its head, body and feet apart, so a pose can move them; where its eye is, to close it.
@@ -223,6 +227,25 @@ function ducklingWearing(f: Frame, wear?: Wear): Frame {
 }
 const duckWearing = (wear?: Wear) => birdFrom(wearing(GROWN, wear), 4, { y: 2, x: 14, lid: 'HH' }, WALKING, { quack: grownQuack, tip: TIPPED, wing: RAISED_WING, lift: (f, up) => lifted(f, up ? WING_UP : WING_HALF) })
 const DUCK = duckWearing()
+// An Opus helper's duck: the grown duck, grander and prouder, with the same face. A gold crown set with
+// jewels in its helper's colour (as a duckling's tuft is in it), a plume in that colour flowing back from
+// it; a collar in that colour; a fuller chest, scalloped. It wears its crown, nothing else.
+const OPUS = [
+  '........xX2.2.2.....',
+  '.......xxX1x1x1H....',
+  '......xx.HiiHHkeH...',
+  '.........HHHHwkkOOOO',
+  '.........HHHHHHoooo.',
+  '..YY......XxxxxxY...',
+  '..YYLY.YLLLLYYYYYYY.',
+  '...YYYYWWWWWWWYLYLYY',
+  '...YYvWWvWWvWWYYLYL.',
+  '...yYYvWWvWWvYYYyyy.',
+  '....yyyyyyyyyyyyyy..',
+  '......ff.....ff.....',
+]
+const drakeWearing = (_wear?: Wear) => birdFrom(OPUS, 4, { y: 2, x: 14, lid: 'HH' }, WALKING, { quack: grownQuack, tip: TIPPED, wing: RAISED_WING, lift: (f, up) => lifted(f, up ? WING_UP : WING_HALF) })
+const DRAKE = drakeWearing()
 // A duckling's stub wing, half and right up behind its head, its folded wing lit as it lifts; and its
 // tail-up dabble, a foot kicking.
 const DUCKLING_WING_HALF = ['', '', '', '', '', '', '........ll', '.......llll', '........ll']
@@ -449,16 +472,16 @@ const once = <T,>(make: () => T) => {
   return () => (made ??= make())
 }
 
-const BIRDS = { duck: DUCK, duckling: DUCKLING } as const
+const BIRDS = { duck: DUCK, duckling: DUCKLING, drake: DRAKE } as const
 type BirdKind = keyof typeof BIRDS
-const LOOPS = { duck: once(() => actions(DUCK)), duckling: once(() => actions(DUCKLING)) }
-const ENDINGS = { duck: once(() => endings(DUCK)), duckling: once(() => endings(DUCKLING)) }
+const LOOPS = { duck: once(() => actions(DUCK)), duckling: once(() => actions(DUCKLING)), drake: once(() => actions(DRAKE)) }
+const ENDINGS = { duck: once(() => endings(DUCK)), duckling: once(() => endings(DUCKLING)), drake: once(() => endings(DRAKE)) }
 
 // Every loop and pose, for the tests to hold to the size and colours.
 export function duckFrames(): Frame[] {
   return [
-    ...[LOOPS.duck(), LOOPS.duckling()].flatMap(l => Object.values(l).flatMap(a => a.frames)),
-    ...[ENDINGS.duck(), ENDINGS.duckling()].flatMap(e => [e.done, e.failed, ...e.cheer, ...e.droop, ...e.asleep, ...e.idle.flat(), ...e.shake, ...e.flinch, ...e.wave, ...e.noticed]),
+    ...[LOOPS.duck(), LOOPS.duckling(), LOOPS.drake()].flatMap(l => Object.values(l).flatMap(a => a.frames)),
+    ...[ENDINGS.duck(), ENDINGS.duckling(), ENDINGS.drake()].flatMap(e => [e.done, e.failed, ...e.cheer, ...e.droop, ...e.asleep, ...e.idle.flat(), ...e.shake, ...e.flinch, ...e.wave, ...e.noticed]),
   ]
 }
 export const DUCK_PALETTE = DUCK_COLORS
@@ -514,7 +537,7 @@ function kitOf(s: DuckScene) {
   const key = `${s.bird}|${s.wear}`
   let kit = WORN.get(key)
   if (kit === undefined) {
-    const b = s.bird === 'duck' ? duckWearing(s.wear) : ducklingIn(s.wear)
+    const b = s.bird === 'duck' ? duckWearing(s.wear) : s.bird === 'drake' ? drakeWearing(s.wear) : ducklingIn(s.wear)
     kit = { loops: actions(b), ends: endings(b) }
     WORN.set(key, kit)
   }
@@ -627,11 +650,28 @@ export type Drawing = { frame: Frame; color: string; breed?: number; theme?: The
 // The same duck as a picture, every pixel its own colour. A PNG, each pixel 8 x 8 so the
 // terminal shows it crisp, base64; made once a frame.
 const pictures = new Map<string, string>()
+// Pixels half the size of the frame's (finer.ts).
+const DUCK_LOOK: Look = 'pixel'
 export function pictureOf(d: Drawing): string {
   const key = `${themeKey(d.theme)}|${d.color}|${d.breed ?? 0}|${d.frame.join('')}`
   const hit = pictures.get(key)
   if (hit !== undefined) return hit
   const palette = paletteOf(d.color, d.breed, d.theme)
+  // The built-in ducks are drawn four times finer (finer.ts): on a grid twice as fine, lit and shaded, the face as drawn.
+  if (d.theme === undefined) {
+    const fine = finer(d.frame, palette, DUCK_LOOK)
+    const colors = ['#000000']
+    const pixels = fine.colors.map(c => {
+      if (c === undefined) return 0
+      const at = colors.indexOf(c)
+      return at < 0 ? colors.push(c) - 1 : at
+    })
+    const png = base64(pngOf(fine.width, fine.height, pixels, colors, 2))
+    if (pictures.size > 3000) pictures.clear()
+    pictures.set(key, png)
+
+    return png
+  }
   const letters = ['.']
   const pixels: number[] = []
   for (const row of d.frame) {

@@ -50,13 +50,27 @@ claude plugin marketplace add AliAlsalkhadi/duckherd
 claude plugin install duckherd@duckherd
 ```
 
+## Update
+
+```sh
+claude plugin marketplace update duckherd
+claude plugin update duckherd@duckherd
+```
+
+Then restart Claude Code or start a new session. If you installed with `extras/install.sh`, run `git pull` in the clone.
+
+## Model calls
+
+By default Duckherd makes a few small model calls through Claude Code (Haiku or Sonnet) to judge how much effort a prompt needs, digest helper reports, name lesson topics and compact transcripts. Likely secrets are blanked first. Only the effort judge can be turned off (`/chat-effort off`); the others have no setting.
+
 ## Use
 
 - `/duckherd <task>` starts a task.
 - `/duckherd panel` shows or hides the side panel.
 - `/duckherd doctor` checks your setup.
+- `/duckherd on` and `/duckherd off` turn the lead duck on or off for the current session only. Off, the session is plain Claude: no lead instructions, rules, panel, notes or wake-ups. The choice is kept if you resume that session.
 
-Settings are in `/config`.
+Settings are in `/config`. `startOn` (default on) sets whether sessions start with the lead duck on. Off, they start as plain Claude until `/duckherd on`.
 
 ## Uninstall
 
