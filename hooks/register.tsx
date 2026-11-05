@@ -107,6 +107,20 @@ const changeOpen = atom({ plugin: 'duckherd', key: 'changeOpen' } as const, null
 const changeDiff = atom({ plugin: 'duckherd', key: 'changeDiff' } as const, null)
 const memory = atom({ plugin: 'duckherd', key: 'memory' } as const, null as MemoryView | null)
 const stopAsk = atom({ plugin: 'duckherd', key: 'stopAsk' } as const, null as string | null)
+const selected = atom({ plugin: 'duckherd', key: 'selected' } as const, null)
+const reportOpen = atom({ plugin: 'duckherd', key: 'reportOpen' } as const, null)
+const stepsOpen = atom({ plugin: 'duckherd', key: 'stepsOpen' } as const, null)
+const planDoneOpen = atom({ plugin: 'duckherd', key: 'planDoneOpen' } as const, false)
+const modelsOpen = atom({ plugin: 'duckherd', key: 'modelsOpen' } as const, false)
+const groupsFlipped = atom({ plugin: 'duckherd', key: 'groupsFlipped' } as const, [] as string[])
+const learnView = atom({ plugin: 'duckherd', key: 'learnView' } as const, 'recent')
+const learnSelected = atom({ plugin: 'duckherd', key: 'learnSelected' } as const, null)
+const learnLimit = atom({ plugin: 'duckherd', key: 'learnLimit' } as const, 10)
+const learnWorkOpen = atom({ plugin: 'duckherd', key: 'learnWorkOpen' } as const, null)
+const checkoutsOpen = atom({ plugin: 'duckherd', key: 'checkoutsOpen' } as const, false)
+const othersOpen = atom({ plugin: 'duckherd', key: 'othersOpen' } as const, false)
+const sessionOpen = atom({ plugin: 'duckherd', key: 'sessionOpen' } as const, null as string | null)
+const handedOff = atom({ plugin: 'duckherd', key: 'handedOff' } as const, false)
 const messages = atom({ plugin: 'duckherd', key: 'messages' } as const, [] as SentMessage[])
 // What each task used, by its name (spend.ts).
 const taskSpend = atom({ plugin: 'duckherd', key: 'taskSpend' } as const, {} as Record<string, TaskSpend>)
@@ -5590,8 +5604,145 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if (await switchedOff($)) return next(e)
+    const readState = (key: string) => {
+      switch (key) {
+        case 'task':
+          return read($, task)
+        case 'plan':
+          return read($, plan)
+        case 'changes':
+          return read($, changes)
+        case 'ducksCalm':
+          return read($, ducksCalm)
+        case 'tab':
+          return read($, tab)
+        case 'handoffs':
+          return read($, handoffs)
+        case 'peers':
+          return read($, peers)
+        case 'selected':
+          return read($, selected)
+        case 'helperModel':
+          return read($, helperModel)
+        case 'modelsOpen':
+          return read($, modelsOpen)
+        case 'looks':
+          return read($, looks)
+        case 'reportOpen':
+          return read($, reportOpen)
+        case 'stepsOpen':
+          return read($, stepsOpen)
+        case 'handedOff':
+          return read($, handedOff)
+        case 'queue':
+          return read($, queue)
+        case 'groupsFlipped':
+          return read($, groupsFlipped)
+        case 'planDoneOpen':
+          return read($, planDoneOpen)
+        case 'selectedHandoff':
+          return read($, selectedHandoff)
+        case 'tellingSession':
+          return read($, tellingSession)
+        case 'confirmRemove':
+          return read($, confirmRemove)
+        case 'memory':
+          return read($, memory)
+        case 'othersOpen':
+          return read($, othersOpen)
+        case 'stopAsk':
+          return read($, stopAsk)
+        case 'sessionOpen':
+          return read($, sessionOpen)
+        case 'changesClosed':
+          return read($, changesClosed)
+        case 'changeOpen':
+          return read($, changeOpen)
+        case 'changeDiff':
+          return read($, changeDiff)
+        case 'checkoutsOpen':
+          return read($, checkoutsOpen)
+        case 'learnView':
+          return read($, learnView)
+        case 'learnSelected':
+          return read($, learnSelected)
+        case 'learnLimit':
+          return read($, learnLimit)
+        case 'explanations':
+          return read($, explanations)
+        case 'learnWorkOpen':
+          return read($, learnWorkOpen)
+        default:
+          throw new Error(`unknown panel state read: ${key}`)
+      }
+    }
+    const updateState = (key: string, recipe: (value: any) => any) => {
+      switch (key) {
+        case 'tab':
+          return update($, tab, recipe)
+        case 'modelsOpen':
+          return update($, modelsOpen, recipe)
+        case 'planDoneOpen':
+          return update($, planDoneOpen, recipe)
+        case 'queue':
+          return update($, queue, recipe)
+        case 'selected':
+          return update($, selected, recipe)
+        case 'reportOpen':
+          return update($, reportOpen, recipe)
+        case 'stepsOpen':
+          return update($, stepsOpen, recipe)
+        case 'groupsFlipped':
+          return update($, groupsFlipped, recipe)
+        case 'selectedHandoff':
+          return update($, selectedHandoff, recipe)
+        case 'handoffs':
+          return update($, handoffs, recipe)
+        case 'stopAsk':
+          return update($, stopAsk, recipe)
+        case 'tellingSession':
+          return update($, tellingSession, recipe)
+        case 'othersOpen':
+          return update($, othersOpen, recipe)
+        case 'confirmRemove':
+          return update($, confirmRemove, recipe)
+        case 'sessionOpen':
+          return update($, sessionOpen, recipe)
+        case 'changeOpen':
+          return update($, changeOpen, recipe)
+        case 'changesClosed':
+          return update($, changesClosed, recipe)
+        case 'checkoutsOpen':
+          return update($, checkoutsOpen, recipe)
+        case 'learnSelected':
+          return update($, learnSelected, recipe)
+        case 'learnView':
+          return update($, learnView, recipe)
+        case 'learnWorkOpen':
+          return update($, learnWorkOpen, recipe)
+        case 'learnLimit':
+          return update($, learnLimit, recipe)
+        default:
+          throw new Error(`unknown panel state update: ${key}`)
+      }
+    }
 
-    return drawPane($, e, panelCore($))
+    return drawPane(
+      {
+        resolveUi: input => $.ui.resolve(input),
+        now: () => $.clock.now(),
+        sessionUsage: () => $.session.usage(),
+        promptSubmit: input => $.prompt.submit(input),
+        promptFill: input => $.prompt.fill(input),
+        toolCall: input => $.tool.call(input),
+        invalidateUi: tier => $.ui.invalidate(tier),
+        copyUi: text => $.ui.copy(text),
+        readState,
+        updateState,
+      },
+      e,
+      panelCore($),
+    )
   })
 
   // ------------------------------------------------------------ the lesson, as a card in the chat

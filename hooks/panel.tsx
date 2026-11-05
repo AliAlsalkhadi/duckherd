@@ -1,7 +1,7 @@
 // The panel: its four tabs (Agents, Git, Sessions, Learn), each a stack of cards, with the context and usage card on
 // top. It draws from the state atoms and from what the lead duck's side hands it (PanelCore), and changes things
 // only through those: an atom it updates, or one of PanelCore's actions. register.tsx opens it and hooks it in.
-import { atom, read, update } from 'claude-code'
+import { atom } from 'claude-code'
 import type { EngineInterface, RenderChildren, RenderInput } from 'claude-code'
 
 import type { AgentView, Checkout, FileChange, LearnView, LogEntry, MemoryView, Peer, PlanStep, Tab } from '../types'
@@ -28,7 +28,18 @@ import { BAND_COLORS, BRANCH_MAX, CACHE_SOON_MS, effortStyle, fitLine, folderNam
 import type { Meter, Piece, StatusFacts } from './band'
 import { dayOf, shortTime, whenAt } from './times'
 
-type $ = EngineInterface
+type PanelHooks = {
+  resolveUi: EngineInterface['ui']['resolve']
+  now: EngineInterface['clock']['now']
+  sessionUsage: EngineInterface['session']['usage']
+  promptSubmit: EngineInterface['prompt']['submit']
+  promptFill: EngineInterface['prompt']['fill']
+  toolCall: EngineInterface['tool']['call']
+  invalidateUi: EngineInterface['ui']['invalidate']
+  copyUi: EngineInterface['ui']['copy']
+  readState: (key: string) => Promise<any>
+  updateState: (key: string, recipe: (value: any) => any) => Promise<void>
+}
 
 // The mod's state the panel reads or writes, declared as register.tsx does (the engine's scan reads an atom only
 // where its own file made it).
@@ -243,12 +254,12 @@ const PLAN_TINT = '#5FD7AF'
 
 // The lead duck's task as the panel shows it: the title less its "(branch …)", the branch (as the task names
 // it, else the one the Git tab shows), the plan, and what the lead duck is doing now.
-async function leadTop($: $, core: PanelCore) {
-  const named = await read($, task)
-  const steps = await read($, plan)
+async function leadTop(hooks: PanelHooks, core: PanelCore) {
+  const named = await hooks.readState('task')
+  const steps = await hooks.readState('plan')
   const branchSaid = /\s*\(branch ([^)]+)\)\s*$/i.exec(named ?? '')
   const title = branchSaid !== null ? (named ?? '').slice(0, branchSaid.index) : named
-  const branch = branchSaid?.[1] ?? (await read($, changes))?.branch ?? undefined
+  const branch = branchSaid?.[1] ?? (await hooks.readState('changes'))?.branch ?? undefined
   const working = (await core.agents()).filter(a => a.kind === 'helper' && a.status === 'running')
   const leadDoing =
     core.leadNow === undefined
@@ -339,16 +350,16 @@ function cachePieces(left: number, ttl: number): Piece[] {
   return pieces.filter(p => p.text !== '')
 }
 
-export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
-  const ui = $.ui.resolve(e)
+export async function drawPane(hooks: PanelHooks, e: RenderInput<'Pane'>, core: PanelCore) {
+  const ui = hooks.resolveUi(e)
   const { Box, Text, Button } = ui
   const width = e.props.bodyColumns ?? e.viewport?.columns ?? 80
-  const at = await $.clock.now()
-  const isCalm = await read($, ducksCalm)
+  const at = await hooks.now()
+  const isCalm = await hooks.readState('ducksCalm')
   // As the once-a-second check last found it: no asking from inside a drawing.
   const isStill = core.isStill
 
-  const stored = await read($, tab)
+  const stored = await hooks.readState('tab')
   const current: Tab = TABS.includes(stored) ? stored : 'agents'
   // What the band above the prompt shows, drawn here in cards: the context and usage on top of every tab, where
   // you are and the model on the Agents tab's top card.
@@ -357,16 +368,16 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
   // With the helpers' steps not yet written, so it never draws them late.
   const allAgents = await core.agents()
   const helpers = allAgents.filter(a => a.kind === 'helper')
-  const drafts = (await read($, handoffs)).filter(h => h.state !== 'discarded')
+  const drafts = (await hooks.readState('handoffs')).filter(h => h.state !== 'discarded')
   const running = helpers.filter(a => a.status === 'running').length
   const toSend = drafts.filter(h => h.state === 'draft').length
-  const peersWaiting = (await read($, peers)).filter(p => p.isWaiting).length
+  const peersWaiting = (await hooks.readState('peers')).filter(p => p.isWaiting).length
   // When this session began: its launch, or a resumed one's first launch.
-  const sessionStart = await $.session.usage().then(
+  const sessionStart = await hooks.sessionUsage().then(
     u => u.startedAt,
     () => undefined,
   )
-  const changedFiles = new Set((await read($, changes))?.files.map(f => f.path) ?? []).size
+  const changedFiles = new Set((await hooks.readState('changes'))?.files.map(f => f.path) ?? []).size
   // Each tab's mark: one number in brackets after its name, the most pressing: in the warning colour
   // when it waits on the person, else as dim as its word.
   type Mark = { n: number; tone: 'need' | 'busy' | 'count' }
@@ -470,7 +481,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
   ]
 
   const openTab = (id: Tab) => {
-    void update($, tab, () => id)
+    void hooks.updateState('tab', () => id)
     if (id === 'sessions') {
       void core.refreshPeers()
       void core.refreshMemory()
@@ -535,7 +546,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
             label="dismiss"
             onPress={() => {
               core.dismissWelcome()
-              $.ui.invalidate('ui.render')
+              hooks.invalidateUi('ui.render')
             }}
           />
         </Box>
@@ -552,16 +563,16 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
   const agentsBody = async () => {
     // The task, less its "(branch …)"; the branch (as the task names it, else the one the Git tab shows); and
     // the lead duck's own "now:", its latest step or waiting on the helpers it started.
-    const { named, steps, title, branch, leadDoing } = await leadTop($, core)
-    const chosen = await read($, selected)
+    const { named, steps, title, branch, leadDoing } = await leadTop(hooks, core)
+    const chosen = await hooks.readState('selected')
     const view = helpers.find(a => a.id === chosen)
-    const pick = await read($, helperModel)
-    const showModels = await read($, modelsOpen)
-    const usedLooks = Math.min(await read($, looks), core.quickLooks)
-    const openReport = await read($, reportOpen)
-    const openSteps = await read($, stepsOpen)
-    const isHandedOff = await read($, handedOff)
-    const lined = await read($, queue)
+    const pick = await hooks.readState('helperModel')
+    const showModels = await hooks.readState('modelsOpen')
+    const usedLooks = Math.min(await hooks.readState('looks'), core.quickLooks)
+    const openReport = await hooks.readState('reportOpen')
+    const openSteps = await hooks.readState('stepsOpen')
+    const isHandedOff = await hooks.readState('handedOff')
+    const lined = await hooks.readState('queue')
     // Helpers at work (or just done, still reacting) one by one, newest first; the finished
     // ones under the task they worked for: the current task's always open, under the running ones with no heading
     // of its own; an earlier task's folded under its title, opened or folded by a press; a group holding the open
@@ -570,14 +581,14 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
     const newestFirst = (list: AgentView[]) => list.map((a, i) => ({ a, i })).sort((x, y) => lastActive(y.a) - lastActive(x.a) || y.i - x.i).map(x => x.a)
     const isLive = (a: AgentView) => a.status === 'running' || (a.endedAt !== undefined && at - a.endedAt < REACT_MS)
     const live = newestFirst(helpers.filter(isLive))
-    const flipped = await read($, groupsFlipped)
+    const flipped = await hooks.readState('groupsFlipped')
     const groups = [...newestFirst(helpers.filter(a => !isLive(a))).reduce((m, a) => m.set(a.task ?? 'Earlier work', [...(m.get(a.task ?? 'Earlier work') ?? []), a]), new Map<string, AgentView[]>())].map(
       ([name, list]) => ({ name, list, isHere: name === (title ?? 'Earlier work'), isOpen: name === (title ?? 'Earlier work') || flipped.includes(name) || list.some(a => a.id === chosen) }),
     )
     const shown = [...live, ...groups.flatMap(g => (g.isOpen ? g.list : []))]
     // The name column: as wide as the longest name listed, so short names leave no gap.
     const doneSteps = steps.filter(p => p.state === 'done').length
-    const showDone = await read($, planDoneOpen)
+    const showDone = await hooks.readState('planDoneOpen')
     // Since when the lead duck (or any helper) has been at work, for the super duck.
     const busySince = core.leadSince ?? (helpers.some(a => a.status === 'running') ? Math.min(...helpers.filter(a => a.status === 'running').map(a => a.startedAt)) : undefined)
     // Each helper's duck: what it is doing now and how it is getting on.
@@ -622,7 +633,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
             label="Open PR"
             variant="primary"
             onPress={() =>
-              void $.prompt.submit({
+              void hooks.promptSubmit({
                 text: `Open a PR for the branch ${branch}. Have a helper run the project's checks, then write the PR's title and description from this task's plan and the helpers' reports: what it does and why, plainly, and how it was tested. Show me the title and description, and wait for me to say push before you push or open anything.`,
                 asUser: true,
               })
@@ -686,7 +697,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
         label="×"
         onPress={() => {
           onPress()
-          $.ui.invalidate('ui.render')
+          hooks.invalidateUi('ui.render')
         }}
       />
     )
@@ -865,7 +876,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                 {HELPER_CHOICES.map(c => {
                   const choose = async () => {
                     await core.setHelperModel(c)
-                    await update($, modelsOpen, () => false)
+                    await hooks.updateState('modelsOpen', () => false)
                   }
                   const name = c === 'auto' ? 'lead duck picks' : MODEL_NAMES[c]
                   return c === pick ? (
@@ -876,10 +887,10 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                     <Button key={`model-${c}`} plain dimColor label={name} onPress={() => void choose()} />
                   )
                 })}
-                <Button key="models-close" plain dimColor label="▴" onPress={() => void update($, modelsOpen, () => false)} />
+                <Button key="models-close" plain dimColor label="▴" onPress={() => void hooks.updateState('modelsOpen', () => false)} />
               </Box>
             ) : (
-              <Button key="models-toggle" plain dimColor label={`${pick === 'auto' ? 'lead duck picks' : helperLabel(pick)} ▾`} onPress={() => void update($, modelsOpen, () => true)} />
+              <Button key="models-toggle" plain dimColor label={`${pick === 'auto' ? 'lead duck picks' : helperLabel(pick)} ▾`} onPress={() => void hooks.updateState('modelsOpen', () => true)} />
             )}
           </Box>
           {/* What the lead duck is doing now, like a helper's, last in the block; at rest the plan below shows what's next. */}
@@ -912,7 +923,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
             label="New task"
             onPress={() => {
               core.dismissResume()
-              $.ui.invalidate('ui.render')
+              hooks.invalidateUi('ui.render')
             }}
           />
         </Box>
@@ -941,7 +952,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
         </Box>,
         doneSteps > 1 && (
           <Box key="plan-done" flexDirection="row">
-            <Button key="plan-done-toggle" plain dimColor label={`${showDone ? '▾' : '▸'} ${doneSteps} done`} onPress={() => void update($, planDoneOpen, isOpen => !isOpen)} />
+            <Button key="plan-done-toggle" plain dimColor label={`${showDone ? '▾' : '▸'} ${doneSteps} done`} onPress={() => void hooks.updateState('planDoneOpen', isOpen => !isOpen)} />
           </Box>
         ),
         ...steps.map((p, i) => {
@@ -990,7 +1001,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
             <Box key={`queue-t-${i}`} flexGrow={1} flexShrink={1}>
               <Text wrap="truncate-end">{`${i + 1}. ${q}`}</Text>
             </Box>
-            <Button key={`queue-drop-${i}`} plain dimColor label="drop" onPress={() => void update($, queue, list => list.filter((_, k) => k !== i))} />
+            <Button key={`queue-drop-${i}`} plain dimColor label="drop" onPress={() => void hooks.updateState('queue', list => list.filter((_, k) => k !== i))} />
           </Box>
         )),
       ])
@@ -1077,12 +1088,12 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
           <Box key={`helper-lines-${a.id}`} flexDirection="column" flexGrow={1} flexShrink={1}>
           <Box key={`helper-row-${a.id}`} flexDirection="row">
             <Box key={`helper-d-${a.id}`} flexGrow={1} flexShrink={1}>
-              <Button key={`view-${a.id}`} plain dimColor label={title} onPress={() => void update($, selected, cur => (cur === a.id ? null : a.id))} />
+              <Button key={`view-${a.id}`} plain dimColor label={title} onPress={() => void hooks.updateState('selected', cur => (cur === a.id ? null : a.id))} />
             </Box>
             {isRunning ? (
               <Box key={`helper-a-${a.id}`} flexDirection="row" columnGap={2} flexShrink={0} marginLeft={2}>
                 {isDozing && <Button key={`nudge-${a.id}`} plain dimColor label="nudge" onPress={() => void core.nudge(a)} />}
-                <Button key={`tell-${a.id}`} plain dimColor label="tell" onPress={() => void $.prompt.fill({ text: `/tell ${a.letter} ` })} />
+                <Button key={`tell-${a.id}`} plain dimColor label="tell" onPress={() => void hooks.promptFill({ text: `/tell ${a.letter} ` })} />
                 <Button key={`watch-${a.id}`} plain dimColor label="watch" onPress={() => void core.watchHelper(a)} />
               </Box>
             ) : (
@@ -1218,14 +1229,14 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                 {a.status === 'failed' && <Button key={`retry-card-${a.id}`} plain label="Retry" onPress={() => core.retryHelper(a)} />}
                 {a.status !== 'running' && <Button key={`watch-${a.id}`} plain label="Watch it back" onPress={() => void core.watchHelper(a)} />}
                 {a.status !== 'running' && (
-                  <Button key={`ask-${a.id}`} plain label="Ask about it" onPress={() => void $.prompt.fill({ text: `About helper ${a.letter} (${a.description}): ` })} />
+                  <Button key={`ask-${a.id}`} plain label="Ask about it" onPress={() => void hooks.promptFill({ text: `About helper ${a.letter} (${a.description}): ` })} />
                 )}
                 {a.report && (
                   <Button
                     key={`report-btn-${a.id}`}
                     plain
                     label={openReport === a.id ? 'Hide the full report' : 'Full report'}
-                    onPress={() => void update($, reportOpen, cur => (cur === a.id ? null : a.id))}
+                    onPress={() => void hooks.updateState('reportOpen', cur => (cur === a.id ? null : a.id))}
                   />
                 )}
                 {a.status !== 'running' && a.steps.length > 0 && (
@@ -1233,7 +1244,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                     key={`steps-btn-${a.id}`}
                     plain
                     label={openSteps === a.id ? 'Hide the steps' : `Steps (${a.steps.length})`}
-                    onPress={() => void update($, stepsOpen, cur => (cur === a.id ? null : a.id))}
+                    onPress={() => void hooks.updateState('stepsOpen', cur => (cur === a.id ? null : a.id))}
                   />
                 )}
               </Box>
@@ -1275,7 +1286,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                     plain
                     label="Stop helper"
                     onPress={async () => {
-                      const ran = await $.tool.call({ tool: 'TaskStop', task_id: a.id }).catch(() => undefined)
+                      const ran = await hooks.toolCall({ tool: 'TaskStop', task_id: a.id }).catch(() => undefined)
                       if (ran !== undefined && ran.deny === undefined && ran.isError !== true) {
                         core.toast(`Stopped helper ${a.letter}`)
                         return
@@ -1323,7 +1334,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                 <Button
                   key={`group-toggle-${k}`}
                   plain
-                  onPress={() => void update($, groupsFlipped, list => (list.includes(g.name) ? list.filter(x => x !== g.name) : [...list, g.name]))}
+                  onPress={() => void hooks.updateState('groupsFlipped', list => (list.includes(g.name) ? list.filter(x => x !== g.name) : [...list, g.name]))}
                 >
                   <Text bold>{g.isOpen ? '▾ ' : '▸ '}</Text>
                   <Text bold>{clipText(g.name, Math.max(16, inner - 2 - 2 - rightCols))}</Text>
@@ -1350,12 +1361,12 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
       // J and k move down and up the helpers, the one moved to opening (keys a mod can take are letters and
       // digits only, not the arrows).
       <Box key="helper-keys" display="none">
-        <Button key="helper-next" label="Next helper" hotkey="j" onPress={() => void update($, selected, cur => shown[Math.min(shown.length - 1, shown.findIndex(a => a.id === cur) + 1)]?.id ?? cur)} />
+        <Button key="helper-next" label="Next helper" hotkey="j" onPress={() => void hooks.updateState('selected', cur => shown[Math.min(shown.length - 1, shown.findIndex(a => a.id === cur) + 1)]?.id ?? cur)} />
         <Button
           key="helper-prev"
           label="Previous helper"
           hotkey="k"
-          onPress={() => void update($, selected, cur => (shown.findIndex(a => a.id === cur) <= 0 ? (shown[0]?.id ?? cur) : (shown[shown.findIndex(a => a.id === cur) - 1]?.id ?? cur)))}
+          onPress={() => void hooks.updateState('selected', cur => (shown.findIndex(a => a.id === cur) <= 0 ? (shown[0]?.id ?? cur) : (shown[shown.findIndex(a => a.id === cur) - 1]?.id ?? cur)))}
         />
       </Box>,
       cardHead(
@@ -1389,17 +1400,17 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
 
   // ---------------------------------------------------------- Sessions
   const sessionsBody = async () => {
-    const list = await read($, peers)
-    const chosen = await read($, selectedHandoff)
+    const list = await hooks.readState('peers')
+    const chosen = await hooks.readState('selectedHandoff')
     // The handoff opened: the one pressed, else the newest still to send. '' is all folded, by a press.
     const open = chosen === '' ? undefined : (drafts.find(h => h.id === chosen) ?? drafts.find(h => h.state === 'draft'))
-    const telling = await read($, tellingSession)
-    const removing = await read($, confirmRemove)
+    const telling = await hooks.readState('tellingSession')
+    const removing = await hooks.readState('confirmRemove')
     const finished = list.filter(p => p.isDone === true && p.ref !== undefined)
-    const mem = await read($, memory)
-    const isOthersOpen = await read($, othersOpen)
-    const asking = await read($, stopAsk)
-    const shownActs = await read($, sessionOpen)
+    const mem = await hooks.readState('memory')
+    const isOthersOpen = await hooks.readState('othersOpen')
+    const asking = await hooks.readState('stopAsk')
+    const shownActs = await hooks.readState('sessionOpen')
     // A terminal session's tab is found through cmux; elsewhere there is nothing to go to.
     const canGoTo = await core.cmuxCommand().then(c => c !== undefined, () => false)
     const root = core.root
@@ -1434,7 +1445,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
         <Button key={keys.yes} plain onPress={onYes}>
           <Text color="error">{yes}</Text>
         </Button>
-        <Button key={keys.no} plain label="Keep it" onPress={() => void update($, stopAsk, () => null)} />
+        <Button key={keys.no} plain label="Keep it" onPress={() => void hooks.updateState('stopAsk', () => null)} />
       </Box>
     )
     // One grid for sessions and leftovers: the dot, a 32-column name, the size (7) and when (8), right-aligned,
@@ -1491,14 +1502,14 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
               : isAsking
                 ? []
                 : [
-                    (canOpen || closing !== undefined) && <Button key={`peer-open-${id}`} plain label="Open" {...(m.isWaiting ? {} : { dimColor: true })} onPress={() => void update($, sessionOpen, cur => (cur === id ? null : id))} />,
-                    m.isWaiting && 'Input' in ui && <Button key={`peer-tell-${id}`} plain label="Tell" onPress={() => void update($, tellingSession, cur => (cur === id ? null : id))} />,
+                    (canOpen || closing !== undefined) && <Button key={`peer-open-${id}`} plain label="Open" {...(m.isWaiting ? {} : { dimColor: true })} onPress={() => void hooks.updateState('sessionOpen', cur => (cur === id ? null : id))} />,
+                    m.isWaiting && 'Input' in ui && <Button key={`peer-tell-${id}`} plain label="Tell" onPress={() => void hooks.updateState('tellingSession', cur => (cur === id ? null : id))} />,
                   ],
           )}
           {isOpen && (
             <Box key={`peer-acts-${id}`} flexDirection="row" columnGap={2} paddingLeft={2}>
               {canOpen && <Button key={`peer-go-${id}`} plain label="Go to" onPress={() => void core.openSession(asPeer(m))} />}
-              {closing !== undefined && <Button key={`mem-close-${id}`} plain label="Close" {...(isIdle ? {} : { dimColor: true })} onPress={() => void update($, stopAsk, () => id)} />}
+              {closing !== undefined && <Button key={`mem-close-${id}`} plain label="Close" {...(isIdle ? {} : { dimColor: true })} onPress={() => void hooks.updateState('stopAsk', () => id)} />}
             </Box>
           )}
           {/* What the person last asked a session that now waits on them, quoted. */}
@@ -1526,7 +1537,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
               <Box key={`peer-tell-in-${id}`} flexGrow={1}>
                 <ui.Input key={`peer-tell-input-${id}`} placeholder={`A message for ${name}; Enter sends it`} autoFocus onSubmit={(text: string) => void core.tellPeer(asPeer(m), text)} />
               </Box>
-              <Button key={`peer-tell-cancel-${id}`} plain dimColor label="Cancel" onPress={() => void update($, tellingSession, () => null)} />
+              <Button key={`peer-tell-cancel-${id}`} plain dimColor label="Cancel" onPress={() => void hooks.updateState('tellingSession', () => null)} />
             </Box>
           )}
         </Box>
@@ -1549,7 +1560,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
         cardHead(
           `peers-h-${g.id}`,
           isOthers ? (
-            <Button key="peers-others" plain dimColor label={`${isFolded ? '▸' : '▾'} ${g.name} · ${g.rows.length}`} onPress={() => void update($, othersOpen, open => !open)} />
+            <Button key="peers-others" plain dimColor label={`${isFolded ? '▸' : '▾'} ${g.name} · ${g.rows.length}`} onPress={() => void hooks.updateState('othersOpen', open => !open)} />
           ) : g.id === 'needs' ? (
             <Text key={`peers-n-${g.id}`} bold color="warning">{g.name}</Text>
           ) : (
@@ -1600,7 +1611,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                 <Box key={`ho-${ho.id}`} flexDirection="column">
                   <Box key={`ho-h-${ho.id}`} flexDirection="row" columnGap={2}>
                     <Box key={`ho-t-${ho.id}`} flexGrow={1} flexShrink={1}>
-                      <Button key={`ho-open-${ho.id}`} plain onPress={() => void update($, selectedHandoff, cur => (cur === ho.id || (cur === null && isOpen) ? '' : ho.id))}>
+                      <Button key={`ho-open-${ho.id}`} plain onPress={() => void hooks.updateState('selectedHandoff', cur => (cur === ho.id || (cur === null && isOpen) ? '' : ho.id))}>
                         <Text bold>{isOpen ? '▾ ' : '▸ '}</Text>
                         <Text bold>{plainText(ho.to)}</Text>
                       </Button>
@@ -1620,9 +1631,9 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                       {ho.state === 'draft' && (
                         <Box key="handoff-actions" flexDirection="row" columnGap={2}>
                           <Button key="ho-send" plain label="Send" onPress={() => void core.sendHandoff(ho.id)} />
-                          <Button key="ho-change" plain label="Change" onPress={() => void $.prompt.fill({ text: `Change the handoff for ${ho.to}: ` })} />
-                          <Button key="ho-copy" plain label="Copy" onPress={() => void $.ui.copy({ text: ho.text })} />
-                          <Button key="ho-discard" plain label="Discard" onPress={() => void update($, handoffs, all => all.map(x => (x.id === ho.id ? { ...x, state: 'discarded' as const } : x)))} />
+                          <Button key="ho-change" plain label="Change" onPress={() => void hooks.promptFill({ text: `Change the handoff for ${ho.to}: ` })} />
+                          <Button key="ho-copy" plain label="Copy" onPress={() => void hooks.copyUi({ text: ho.text })} />
+                          <Button key="ho-discard" plain label="Discard" onPress={() => void hooks.updateState('handoffs', all => all.map(x => (x.id === ho.id ? { ...x, state: 'discarded' as const } : x)))} />
                           {ho.error && (
                             <Box key="ho-note" flexGrow={1} flexShrink={1} justifyContent="flex-end">
                               <Text color="error" wrap="truncate-end">{`Last try failed: ${ho.error}`}</Text>
@@ -1639,7 +1650,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                       {ho.state === 'sent' && (
                         <Box key="handoff-sent" flexDirection="row" columnGap={2}>
                           {sentTo !== undefined && <Button key="ho-watch" plain label="Open that session" onPress={() => void core.openSession(sentTo)} />}
-                          <Button key="ho-remove" plain label="Remove" onPress={() => void update($, handoffs, all => all.map(x => (x.id === ho.id ? { ...x, state: 'discarded' as const } : x)))} />
+                          <Button key="ho-remove" plain label="Remove" onPress={() => void hooks.updateState('handoffs', all => all.map(x => (x.id === ho.id ? { ...x, state: 'discarded' as const } : x)))} />
                         </Box>
                       )}
                     </Box>
@@ -1677,7 +1688,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                     { text: plainText(l.name), ...(l.detail !== undefined ? { detail: plainText(l.isInUse ? `${l.detail}, in use` : l.detail) } : {}) },
                     { text: sizeText(l.mb), ...(l.mb >= 1500 ? { color: 'error' } : l.mb >= 600 ? { color: 'warning' } : {}) },
                     { text: when, ...(isIdle ? { color: 'warning' } : {}) },
-                    isAsking ? [] : [<Button key={`${key}-stop`} plain label="Stop" {...(isIdle ? {} : { dimColor: true })} onPress={() => void update($, stopAsk, () => key)} />],
+                    isAsking ? [] : [<Button key={`${key}-stop`} plain label="Stop" {...(isIdle ? {} : { dimColor: true })} onPress={() => void hooks.updateState('stopAsk', () => key)} />],
                   )}
                   {isAsking &&
                     confirmRow(
@@ -1701,7 +1712,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
             <Button key="peers-clean-yes" plain onPress={() => void core.removeFinished()}>
               <Text color="error">Yes, delete</Text>
             </Button>
-            <Button key="peers-clean-no" plain label="Keep them" onPress={() => void update($, confirmRemove, () => false)} />
+            <Button key="peers-clean-no" plain label="Keep them" onPress={() => void hooks.updateState('confirmRemove', () => false)} />
           </Box>
         )}
         {/* The footer: when they were read, and the tab's secondary links. */}
@@ -1718,7 +1729,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
               void core.refreshMemory()
             }}
           />,
-          finished.length > 0 && !removing && <Button key="peers-clean" plain dimColor label={`Remove ${finished.length} finished`} onPress={() => void update($, confirmRemove, () => true)} />,
+          finished.length > 0 && !removing && <Button key="peers-clean" plain dimColor label={`Remove ${finished.length} finished`} onPress={() => void hooks.updateState('confirmRemove', () => true)} />,
         ])}
       </Box>
     )
@@ -1728,7 +1739,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
   // Two cards, stacked: the worktrees, one line each, then what changed as a tree of folders with a dot per file
   // type, each name in the colour of what happened to it.
   const changesBody = async () => {
-    const view = await read($, changes)
+    const view = await hooks.readState('changes')
     // The changes card's heading: its word, and what it holds flush right.
     const changesHead = (right?: RenderChildren) => cardHead('ch-h', <Text key="ch-word" dimColor>changes</Text>, right)
     if (view === null) {
@@ -1740,10 +1751,10 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
         </Box>
       )
     }
-    const closed = new Set(await read($, changesClosed))
-    const open = await read($, changeOpen)
-    const diff = await read($, changeDiff)
-    const showClean = await read($, checkoutsOpen)
+    const closed = new Set(await hooks.readState('changesClosed'))
+    const open = await hooks.readState('changeOpen')
+    const diff = await hooks.readState('changeDiff')
+    const showClean = await hooks.readState('checkoutsOpen')
     const tilde = (path: string) => (core.home !== '' && path.startsWith(core.home) ? `~${path.slice(core.home.length)}` : path)
     const main = view.checkouts[0]?.path ?? view.root
     const groups = (
@@ -1815,7 +1826,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
             {c.path === view.own ? (
               <Text dimColor>here</Text>
             ) : (
-              <Button key={`switch-${c.path}`} plain label="Switch" onPress={() => void $.prompt.fill({ text: `/cd ${c.path}` })} />
+              <Button key={`switch-${c.path}`} plain label="Switch" onPress={() => void hooks.promptFill({ text: `/cd ${c.path}` })} />
             )}
           </Box>
         </Box>
@@ -1861,7 +1872,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
             `diff-a-${key}`,
             <Box key={`diff-a-b-${key}`} flexDirection="row" columnGap={2}>
               <Button key={`diff-full-${key}`} plain label="Open full diff" onPress={() => void core.openFullDiff(f)} />
-              <Button key={`diff-close-${key}`} plain dimColor label="Close" onPress={() => void update($, changeOpen, () => null)} />
+              <Button key={`diff-close-${key}`} plain dimColor label="Close" onPress={() => void hooks.updateState('changeOpen', () => null)} />
             </Box>,
           )}
         </Box>
@@ -1871,7 +1882,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
     const fileCount = new Set(view.files.map(f => f.path)).size + view.more
     // Folders fold only when there are many files (more than 8); a short list shows whole, its folders plain dim lines.
     const canFold = fileCount > 8
-    const fold = (key: string) => void update($, changesClosed, list => (list.includes(key) ? list.filter(k => k !== key) : [...list, key]))
+    const fold = (key: string) => void hooks.updateState('changesClosed', list => (list.includes(key) ? list.filter(k => k !== key) : [...list, key]))
     // A row of the tree: a folder's line, or a file two spaces in under it; no guides, no status letter: a file's
     // name is green when added, red when deleted, warning in a conflict, plain when modified.
     const row = (r: TreeRow) => {
@@ -1920,7 +1931,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                 plain
                 dimColor
                 label={showClean ? 'Hide the clean ones' : `… ${hiddenClean} more, all clean`}
-                onPress={() => void update($, checkoutsOpen, all => !all)}
+                onPress={() => void hooks.updateState('checkoutsOpen', all => !all)}
               />
             </Box>
           ),
@@ -1961,11 +1972,11 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
   const learnBody = async () => {
     // Each day's helpers, across sessions, for its day's header.
     const days = await core.helperDays()
-    const view = await read($, learnView)
-    const openSlot = await read($, learnSelected)
-    const limit = await read($, learnLimit)
-    const explained = await read($, explanations)
-    const openWork = await read($, learnWorkOpen)
+    const view = await hooks.readState('learnView')
+    const openSlot = await hooks.readState('learnSelected')
+    const limit = await hooks.readState('learnLimit')
+    const explained = await hooks.readState('explanations')
+    const openWork = await hooks.readState('learnWorkOpen')
     const entries = await core.entriesNow()
     const all = conceptsOf(entries)
     const byKey = new Map(all.map(c => [c.key, c]))
@@ -2003,7 +2014,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
               key={`ask-${slot}`}
               plain
               label="Ask Claude"
-              onPress={() => void $.prompt.fill({ text: `Teach me "${c.idea}" using where it shows up in this codebase: ` })}
+              onPress={() => void hooks.promptFill({ text: `Teach me "${c.idea}" using where it shows up in this codebase: ` })}
             />
           </Box>
           {/* e explains the open idea, on a hidden button as the tabs' keys are. */}
@@ -2037,7 +2048,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
               <Text color={topicColor(c.topic)}>◆</Text>
             </Box>
             <Box key={`idea-t-${slot}`} flexGrow={1} flexShrink={1}>
-              <Button key={`idea-v-${slot}`} plain label={clipText(c.idea, Math.max(16, width - 14))} onPress={() => void update($, learnSelected, cur => (cur === slot ? null : slot))} />
+              <Button key={`idea-v-${slot}`} plain label={clipText(c.idea, Math.max(16, width - 14))} onPress={() => void hooks.updateState('learnSelected', cur => (cur === slot ? null : slot))} />
             </Box>
             {c.seen.length > 1 && (
               <Box key={`idea-n-${slot}`} flexShrink={0} marginLeft={1}>
@@ -2053,8 +2064,8 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
     // Recent and Topics: a selector of plain words, the one shown bold and underlined in the accent; r and t
     // press them from hidden buttons, as the tabs' number keys do.
     const pickView = async (id: LearnView) => {
-      await update($, learnView, () => id)
-      await update($, learnSelected, () => null)
+      await hooks.updateState('learnView', () => id)
+      await hooks.updateState('learnSelected', () => null)
     }
     const viewWord = (id: LearnView, name: string) =>
       view === id ? (
@@ -2119,7 +2130,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
                 return (
                   <Box key={`ss-${si}`} flexDirection="column" paddingLeft={2}>
                     <Box key={`ss-h-${si}`} flexDirection="row">
-                      <Button key={`work-${si}`} plain label={clipText(fromText(ss.from), Math.max(16, width - 4))} onPress={() => void update($, learnWorkOpen, cur => (cur === workKey ? null : workKey))} />
+                      <Button key={`work-${si}`} plain label={clipText(fromText(ss.from), Math.max(16, width - 4))} onPress={() => void hooks.updateState('learnWorkOpen', cur => (cur === workKey ? null : workKey))} />
                     </Box>
                     {isOpen && ss.what && (
                       <Box key={`ss-w-${si}`} paddingLeft={2}>
@@ -2140,7 +2151,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
           ))}
           {sessions.length > shown.length && (
             <Box key="lv-more-row" paddingLeft={2}>
-              <Button key="lv-more" plain dimColor label={`… ${sessions.length - shown.length} older · show more`} onPress={() => void update($, learnLimit, n => Math.max(n, 10) + 10)} />
+              <Button key="lv-more" plain dimColor label={`… ${sessions.length - shown.length} older · show more`} onPress={() => void hooks.updateState('learnLimit', n => Math.max(n, 10) + 10)} />
             </Box>
           )}
         </Box>
@@ -2180,7 +2191,7 @@ export async function drawPane($: $, e: RenderInput<'Pane'>, core: PanelCore) {
             {viewWord('recent', 'Recent')}
             {viewWord('topics', 'Topics')}
           </Box>
-          <Button key="learn-save" plain label="Save what we just did" onPress={() => void $.prompt.submit({ text: LEARN_PROMPT })} />
+          <Button key="learn-save" plain label="Save what we just did" onPress={() => void hooks.promptSubmit({ text: LEARN_PROMPT })} />
           <Box key="learn-keys" display="none">
             <Button key="lv-key-recent" label="Recent" hotkey="r" onPress={() => void pickView('recent')} />
             <Button key="lv-key-topics" label="Topics" hotkey="t" onPress={() => void pickView('topics')} />
